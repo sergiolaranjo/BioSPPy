@@ -19,6 +19,7 @@ from __future__ import absolute_import, division, print_function
 # 3rd party
 import numpy as np
 import warnings
+import pywt
 from scipy.interpolate import interp1d
 from scipy.signal import welch
 
@@ -36,7 +37,8 @@ FBANDS = {'ulf': [0, 0.003],
           }
 
 NOT_FEATURES = ['rri', 'rri_trend', 'outliers_method', 'rri_det', 'hr', 'bins',
-                'q_hist', 'fbands', 'frequencies', 'powers', 'freq_method']
+                'q_hist', 'fbands', 'frequencies', 'powers', 'freq_method',
+                'wavelet_name', 'decomposition_level', 'dwt_freq_bands']
 
 
 def hrv(rpeaks=None, sampling_rate=1000., rri=None, parameters='auto',
@@ -58,7 +60,8 @@ def hrv(rpeaks=None, sampling_rate=1000., rri=None, parameters='auto',
         If 'auto' computes the recommended HRV features. If 'time' computes
         only time-domain features. If 'frequency' computes only
         frequency-domain features. If 'non-linear' computes only non-linear
-        features. If 'all' computes all available HRV features. Default: 'auto'.
+        features. If 'wavelet' computes only wavelet-based features.
+        If 'all' computes all available HRV features. Default: 'auto'.
     outliers : str, optional
         Determines the method to handle outliers. If 'interpolate', replaces
         the outlier RR-intervals
@@ -77,6 +80,8 @@ def hrv(rpeaks=None, sampling_rate=1000., rri=None, parameters='auto',
         Whether to show the individual HRV plots. Default: False.
     kwargs : dict, optional
         fbands : dictionary of frequency bands (Hz) to use.
+        wavelet : str, wavelet name for DWT analysis (default: 'db12').
+        wavelet_level : int, decomposition level for DWT (default: 6).
 
     Returns
     -------
@@ -93,7 +98,7 @@ def hrv(rpeaks=None, sampling_rate=1000., rri=None, parameters='auto',
     if rpeaks is None and rri is None:
         raise TypeError("Please specify an R-Peak or RRI list or array.")
 
-    parameters_list = ['auto', 'time', 'frequency', 'non-linear', 'all']
+    parameters_list = ['auto', 'time', 'frequency', 'non-linear', 'wavelet', 'all']
     if parameters not in parameters_list:
         raise ValueError(f"'{parameters}' is not an available input. Enter one"
                          f"from: {parameters_list}.")
@@ -180,9 +185,28 @@ def hrv(rpeaks=None, sampling_rate=1000., rri=None, parameters='auto',
                                    detrend_rri=detrend_rri,
                                    show=show_individual)
             out = out.join(hrv_nl)
-                
+
         except ValueError as e:
             print('WARNING: Non-linear features not computed. Check input.')
+            print(e)
+            pass
+
+    # compute wavelet-based features
+    if parameters in ['wavelet', 'all']:
+        try:
+            wavelet_name = kwargs.get('wavelet', 'db12')
+            wavelet_level = kwargs.get('wavelet_level', 6)
+
+            hrv_wv = hrv_wavelet(rri=rri,
+                                 duration=duration,
+                                 wavelet=wavelet_name,
+                                 level=wavelet_level,
+                                 detrend_rri=detrend_rri,
+                                 show=show_individual)
+            out = out.join(hrv_wv)
+
+        except ValueError as e:
+            print('WARNING: Wavelet features not computed. Check input.')
             print(e)
             pass
 
@@ -655,6 +679,227 @@ def hrv_nonlinear(rri=None, duration=None, detrend_rri=True, show=False):
         # compute approximate entropy
         appen = approximate_entropy(rri)
         out = out.append(appen, 'appen')
+
+    return out
+
+
+def hrv_wavelet(rri=None, duration=None, wavelet='db12', level=6,
+                detrend_rri=True, show=False):
+    """Computes HRV features using Discrete Wavelet Transform (DWT) decomposition.
+
+    This function performs multi-resolution wavelet decomposition of the RRI
+    sequence using Daubechies 12 wavelet (or other specified wavelet) and
+    computes energy-based features for each decomposition level.
+
+    The wavelet decomposition provides a time-frequency representation where
+    different levels correspond approximately to different HRV frequency bands:
+    - Level 1 (highest freq): VHF-like components
+    - Level 2-3: HF-like components
+    - Level 4-5: LF-like components
+    - Level 6+: VLF-like components
+
+    Parameters
+    ----------
+    rri : array
+        RR-intervals (ms).
+    duration : int, optional
+        Duration of the signal (s).
+    wavelet : str, optional
+        Wavelet family to use. Default: 'db12' (Daubechies 12).
+        Other options: 'db4', 'db6', 'sym5', 'coif3', etc.
+    level : int, optional
+        Number of decomposition levels. Default: 6.
+    detrend_rri : bool, optional
+        Whether to detrend the input signal. Default: True.
+    show : bool, optional
+        Controls the plotting calls. Default: False.
+
+    Returns
+    -------
+    wavelet_name : str
+        Name of the wavelet used.
+    decomposition_level : int
+        Number of decomposition levels.
+    dwt_energy_total : float
+        Total energy of the wavelet decomposition.
+    dwt_energy_rel_a{level} : float
+        Relative energy of approximation coefficients at highest level.
+    dwt_energy_rel_d{i} : float
+        Relative energy of detail coefficients at level i (i=1 to level).
+    dwt_energy_abs_a{level} : float
+        Absolute energy of approximation coefficients.
+    dwt_energy_abs_d{i} : float
+        Absolute energy of detail coefficients at level i.
+    dwt_entropy : float
+        Shannon wavelet entropy based on relative energies.
+    dwt_std_a{level} : float
+        Standard deviation of approximation coefficients.
+    dwt_std_d{i} : float
+        Standard deviation of detail coefficients at level i.
+
+    Notes
+    -----
+    The Daubechies 12 (db12) wavelet provides good time-frequency localization
+    and is commonly used in HRV analysis. The decomposition level should be
+    chosen based on the sampling rate and desired frequency resolution.
+
+    For an RRI sequence with mean RR~1000ms (HR~60bpm), typical sampling is
+    ~1Hz, and 6 levels of decomposition provide adequate frequency bands.
+
+    References
+    ----------
+    .. [1] Thurner, S., Feurstein, M. C., & Teich, M. C. (1998).
+           Multiresolution wavelet analysis of heartbeat intervals discriminates
+           healthy patients from those with cardiac pathology.
+           Physical Review Letters, 80(7), 1544.
+    .. [2] Acharya, U. R., et al. (2015). Heart rate variability:
+           a review. Medical & biological engineering & computing, 44(12), 1031-1051.
+
+    """
+
+    # check inputs
+    if rri is None:
+        raise TypeError("Please specify an RRI list or array.")
+
+    # ensure numpy
+    rri = np.array(rri, dtype=float)
+
+    # check duration
+    if duration is None:
+        duration = np.sum(rri) / 1000.  # seconds
+
+    if duration < 60:
+        raise ValueError("Signal duration must be greater than 60 seconds to "
+                         "compute wavelet-based features.")
+
+    # check if wavelet is valid
+    if wavelet not in pywt.wavelist():
+        raise ValueError(f"'{wavelet}' is not a valid wavelet. "
+                         f"Available wavelets: {pywt.wavelist()}")
+
+    # check decomposition level
+    max_level = pywt.dwt_max_level(len(rri), wavelet)
+    if level > max_level:
+        warnings.warn(f"Decomposition level {level} is too high for signal "
+                      f"length {len(rri)}. Using maximum level {max_level}.")
+        level = max_level
+
+    # detrend
+    if detrend_rri:
+        rri = detrend_window(rri)['rri_det']
+        print('Wavelet domain: the rri sequence was detrended.')
+
+    # initialize outputs
+    out = utils.ReturnTuple((), ())
+
+    # add wavelet info to output
+    out = out.append([wavelet, level], ['wavelet_name', 'decomposition_level'])
+
+    # perform wavelet decomposition
+    coeffs = pywt.wavedec(rri, wavelet, level=level)
+
+    # coeffs[0] = approximation coefficients (lowest frequency)
+    # coeffs[1:] = detail coefficients from level n to 1 (high to low freq)
+
+    # compute energy for each coefficient set
+    energies = []
+    for coeff in coeffs:
+        energy = np.sum(coeff ** 2)
+        energies.append(energy)
+
+    total_energy = np.sum(energies)
+
+    # add total energy to output
+    out = out.append(total_energy, 'dwt_energy_total')
+
+    # compute relative energies (normalized by total energy)
+    rel_energies = [e / total_energy for e in energies]
+
+    # add approximation energy (coeffs[0])
+    out = out.append([energies[0], rel_energies[0]],
+                     [f'dwt_energy_abs_a{level}', f'dwt_energy_rel_a{level}'])
+
+    # add approximation std
+    out = out.append(np.std(coeffs[0]), f'dwt_std_a{level}')
+
+    # add detail energies (coeffs[1] is level n, coeffs[2] is level n-1, etc.)
+    for i in range(1, len(coeffs)):
+        detail_level = level - i + 1
+        out = out.append([energies[i], rel_energies[i]],
+                         [f'dwt_energy_abs_d{detail_level}',
+                          f'dwt_energy_rel_d{detail_level}'])
+
+        # add detail std
+        out = out.append(np.std(coeffs[i]), f'dwt_std_d{detail_level}')
+
+    # compute wavelet entropy (Shannon entropy based on energy distribution)
+    # Filter out zero energies to avoid log(0)
+    rel_energies_nonzero = [e for e in rel_energies if e > 0]
+    if len(rel_energies_nonzero) > 0:
+        wavelet_entropy = -np.sum([e * np.log(e) for e in rel_energies_nonzero])
+    else:
+        wavelet_entropy = 0.0
+
+    out = out.append(wavelet_entropy, 'dwt_entropy')
+
+    # compute frequency band approximations based on decomposition levels
+    # This is an approximation based on dyadic decomposition
+    # Assuming mean RR interval is around 1000ms, effective sampling ~1Hz
+    mean_rr = np.mean(rri) / 1000.0  # convert to seconds
+    fs_effective = 1.0 / mean_rr  # effective sampling frequency
+
+    # map detail levels to frequency bands
+    freq_bands = {}
+    for i in range(1, level + 1):
+        f_low = fs_effective / (2 ** (i + 1))
+        f_high = fs_effective / (2 ** i)
+        freq_bands[f'dwt_fband_d{i}'] = [f_low, f_high]
+
+    # approximation band
+    freq_bands[f'dwt_fband_a{level}'] = [0, fs_effective / (2 ** (level + 1))]
+
+    # add frequency bands to output (for reference)
+    out = out.append(freq_bands, 'dwt_freq_bands')
+
+    # plot (if requested)
+    if show:
+        import matplotlib.pyplot as plt
+
+        # create subplots for coefficients
+        n_plots = len(coeffs)
+        fig, axes = plt.subplots(n_plots, 1, figsize=(12, 2*n_plots))
+
+        if n_plots == 1:
+            axes = [axes]
+
+        # plot approximation
+        axes[0].plot(coeffs[0])
+        axes[0].set_title(f'Approximation (a{level}) - Energy: {energies[0]:.2f}')
+        axes[0].set_ylabel('Amplitude')
+        axes[0].grid(True)
+
+        # plot details
+        for i in range(1, len(coeffs)):
+            detail_level = level - i + 1
+            axes[i].plot(coeffs[i])
+            axes[i].set_title(f'Detail (d{detail_level}) - Energy: {energies[i]:.2f}')
+            axes[i].set_ylabel('Amplitude')
+            axes[i].grid(True)
+
+        axes[-1].set_xlabel('Sample')
+        plt.tight_layout()
+        plt.show()
+
+        # plot energy distribution
+        fig2, ax2 = plt.subplots(1, 1, figsize=(10, 6))
+        labels = [f'a{level}'] + [f'd{level-i+1}' for i in range(1, len(coeffs))]
+        ax2.bar(labels, rel_energies)
+        ax2.set_title('Relative Energy Distribution Across Wavelet Coefficients')
+        ax2.set_xlabel('Coefficient Level')
+        ax2.set_ylabel('Relative Energy')
+        ax2.grid(True, axis='y')
+        plt.tight_layout()
+        plt.show()
 
     return out
 
