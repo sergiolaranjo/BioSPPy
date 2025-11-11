@@ -1014,3 +1014,381 @@ def approximate_entropy(rri, m=2, r=0.2):
     n = len(rri)
 
     return _phi(m) - _phi(m + 1)
+
+
+def hht_variability(rri=None, method='ceemdan', num_ensemble=100, noise_std=0.2,
+                   max_imf=None, max_iter=1000, sampling_rate=4.0, random_seed=None):
+    """Compute HRV features using Hilbert-Huang Transform (HHT).
+
+    Decomposes RR-intervals using CEEMDAN and extracts variability features
+    from each Intrinsic Mode Function (IMF).
+
+    Parameters
+    ----------
+    rri : array
+        RR-intervals (ms).
+    method : str, optional
+        Decomposition method: 'emd', 'eemd', or 'ceemdan'. Default: 'ceemdan'.
+    num_ensemble : int, optional
+        Number of ensemble members (for EEMD/CEEMDAN). Default: 100.
+    noise_std : float, optional
+        Standard deviation of added noise (for EEMD/CEEMDAN). Default: 0.2.
+    max_imf : int, optional
+        Maximum number of IMFs to extract. Default: None (automatic).
+    max_iter : int, optional
+        Maximum sifting iterations. Default: 1000.
+    sampling_rate : float, optional
+        Effective sampling rate of RRI series (Hz). Default: 4.0 Hz.
+    random_seed : int, optional
+        Random seed for reproducibility. Default: None.
+
+    Returns
+    -------
+    imfs : array
+        Extracted IMFs (n_imfs, n_samples).
+    residue : array
+        Final residue.
+    inst_amplitude : array
+        Instantaneous amplitude for each IMF.
+    inst_frequency : array
+        Instantaneous frequency for each IMF.
+    inst_phase : array
+        Instantaneous phase for each IMF.
+    imf_energy : array
+        Energy of each IMF.
+    imf_frequency_mean : array
+        Mean instantaneous frequency of each IMF (Hz).
+    imf_frequency_std : array
+        Standard deviation of instantaneous frequency of each IMF (Hz).
+    total_energy : float
+        Total energy across all IMFs.
+    energy_ratio : array
+        Energy ratio of each IMF to total energy.
+
+    Notes
+    -----
+    - CEEMDAN is recommended for best spectral separation
+    - IMFs represent oscillatory components at different time scales
+    - Lower-order IMFs contain higher frequency components
+    - Energy distribution reveals variability patterns
+
+    References
+    ----------
+    .. [Huang98] Huang et al. (1998). The empirical mode decomposition and
+                 the Hilbert spectrum.
+    .. [Torres11] Torres et al. (2011). A complete ensemble EMD with adaptive noise.
+
+    Example
+    -------
+    >>> from biosppy.signals import hrv
+    >>> import numpy as np
+    >>> rri = np.random.randn(100) * 50 + 800  # Simulated RRI
+    >>> result = hrv.hht_variability(rri=rri, method='ceemdan')
+    >>> print(f"Number of IMFs: {len(result['imfs'])}")
+    """
+    # Check inputs
+    if rri is None:
+        raise TypeError("Please specify RR-intervals.")
+
+    rri = np.array(rri, dtype=float)
+
+    # Import EMD module
+    from . import emd as emd_module
+
+    # Perform decomposition
+    if method.lower() == 'emd':
+        imfs, residue = emd_module.emd(signal=rri, max_imf=max_imf, max_iter=max_iter)
+    elif method.lower() == 'eemd':
+        imfs, residue = emd_module.eemd(signal=rri, num_ensemble=num_ensemble,
+                                       noise_std=noise_std, max_imf=max_imf,
+                                       max_iter=max_iter, random_seed=random_seed)
+    elif method.lower() == 'ceemdan':
+        imfs, residue = emd_module.ceemdan(signal=rri, num_ensemble=num_ensemble,
+                                          noise_std=noise_std, max_imf=max_imf,
+                                          max_iter=max_iter, random_seed=random_seed)
+    else:
+        raise ValueError(f"Unknown method '{method}'. Choose 'emd', 'eemd', or 'ceemdan'.")
+
+    # Compute Hilbert spectrum
+    inst_amplitude, inst_frequency, inst_phase = emd_module.hilbert_spectrum(
+        imfs=imfs, sampling_rate=sampling_rate)
+
+    # Compute IMF features
+    n_imfs = len(imfs)
+    imf_energy = np.zeros(n_imfs)
+    imf_frequency_mean = np.zeros(n_imfs)
+    imf_frequency_std = np.zeros(n_imfs)
+
+    for i in range(n_imfs):
+        # Energy: integral of squared amplitude
+        imf_energy[i] = np.sum(imfs[i] ** 2)
+
+        # Mean and std of instantaneous frequency
+        valid_freq = inst_frequency[i][inst_frequency[i] > 0]
+        if len(valid_freq) > 0:
+            imf_frequency_mean[i] = np.mean(valid_freq)
+            imf_frequency_std[i] = np.std(valid_freq)
+
+    # Total energy and energy ratio
+    total_energy = np.sum(imf_energy)
+    if total_energy > 0:
+        energy_ratio = imf_energy / total_energy
+    else:
+        energy_ratio = np.zeros(n_imfs)
+
+    # Output
+    args = (imfs, residue, inst_amplitude, inst_frequency, inst_phase,
+            imf_energy, imf_frequency_mean, imf_frequency_std,
+            total_energy, energy_ratio)
+    names = ('imfs', 'residue', 'inst_amplitude', 'inst_frequency', 'inst_phase',
+             'imf_energy', 'imf_frequency_mean', 'imf_frequency_std',
+             'total_energy', 'energy_ratio')
+
+    return utils.ReturnTuple(args, names)
+
+
+def hht_frequency_bands(rri=None, method='ceemdan', fbands=None, num_ensemble=100,
+                       noise_std=0.2, max_imf=None, sampling_rate=4.0, random_seed=None):
+    """Compute frequency-domain HRV features using HHT decomposition.
+
+    Maps IMFs to traditional HRV frequency bands (VLF, LF, HF) based on
+    their mean instantaneous frequency.
+
+    Parameters
+    ----------
+    rri : array
+        RR-intervals (ms).
+    method : str, optional
+        Decomposition method: 'emd', 'eemd', or 'ceemdan'. Default: 'ceemdan'.
+    fbands : dict, optional
+        Frequency bands (Hz). If None, uses default HRV bands.
+        Default: {'vlf': [0.003, 0.04], 'lf': [0.04, 0.15], 'hf': [0.15, 0.4]}.
+    num_ensemble : int, optional
+        Number of ensemble members. Default: 100.
+    noise_std : float, optional
+        Noise standard deviation. Default: 0.2.
+    max_imf : int, optional
+        Maximum number of IMFs. Default: None.
+    sampling_rate : float, optional
+        Effective sampling rate (Hz). Default: 4.0 Hz.
+    random_seed : int, optional
+        Random seed. Default: None.
+
+    Returns
+    -------
+    vlf_power : float
+        Very Low Frequency power (ms²).
+    lf_power : float
+        Low Frequency power (ms²).
+    hf_power : float
+        High Frequency power (ms²).
+    total_power : float
+        Total power (ms²).
+    lf_hf_ratio : float
+        LF/HF ratio.
+    vlf_norm : float
+        Normalized VLF power (%).
+    lf_norm : float
+        Normalized LF power (%).
+    hf_norm : float
+        Normalized HF power (%).
+    imf_to_band : dict
+        Mapping of IMF index to frequency band.
+
+    Notes
+    -----
+    - IMFs are mapped to bands based on mean instantaneous frequency
+    - Power is computed as sum of squared amplitudes
+    - Normalized powers exclude VLF contribution
+
+    Example
+    -------
+    >>> from biosppy.signals import hrv
+    >>> import numpy as np
+    >>> rri = np.random.randn(200) * 50 + 800
+    >>> result = hrv.hht_frequency_bands(rri=rri)
+    >>> print(f"LF/HF ratio: {result['lf_hf_ratio']:.2f}")
+    """
+    # Check inputs
+    if rri is None:
+        raise TypeError("Please specify RR-intervals.")
+
+    # Default frequency bands
+    if fbands is None:
+        fbands = {'vlf': [0.003, 0.04], 'lf': [0.04, 0.15], 'hf': [0.15, 0.4]}
+
+    # Perform HHT decomposition
+    hht_result = hht_variability(rri=rri, method=method, num_ensemble=num_ensemble,
+                                noise_std=noise_std, max_imf=max_imf,
+                                sampling_rate=sampling_rate, random_seed=random_seed)
+
+    imfs = hht_result['imfs']
+    inst_frequency = hht_result['inst_frequency']
+    imf_frequency_mean = hht_result['imf_frequency_mean']
+    imf_energy = hht_result['imf_energy']
+
+    n_imfs = len(imfs)
+
+    # Map IMFs to frequency bands
+    imf_to_band = {}
+    vlf_power = 0.0
+    lf_power = 0.0
+    hf_power = 0.0
+
+    for i in range(n_imfs):
+        mean_freq = imf_frequency_mean[i]
+
+        # Assign to band
+        if fbands['vlf'][0] <= mean_freq < fbands['vlf'][1]:
+            band = 'vlf'
+            vlf_power += imf_energy[i]
+        elif fbands['lf'][0] <= mean_freq < fbands['lf'][1]:
+            band = 'lf'
+            lf_power += imf_energy[i]
+        elif fbands['hf'][0] <= mean_freq < fbands['hf'][1]:
+            band = 'hf'
+            hf_power += imf_energy[i]
+        else:
+            band = 'other'
+
+        imf_to_band[i] = {'band': band, 'mean_freq': mean_freq}
+
+    # Total power
+    total_power = vlf_power + lf_power + hf_power
+
+    # LF/HF ratio
+    if hf_power > 0:
+        lf_hf_ratio = lf_power / hf_power
+    else:
+        lf_hf_ratio = np.nan
+
+    # Normalized powers (excluding VLF)
+    power_no_vlf = lf_power + hf_power
+    if power_no_vlf > 0:
+        lf_norm = (lf_power / power_no_vlf) * 100.0
+        hf_norm = (hf_power / power_no_vlf) * 100.0
+        vlf_norm = (vlf_power / total_power) * 100.0 if total_power > 0 else 0.0
+    else:
+        lf_norm = 0.0
+        hf_norm = 0.0
+        vlf_norm = 0.0
+
+    # Output
+    args = (vlf_power, lf_power, hf_power, total_power, lf_hf_ratio,
+            vlf_norm, lf_norm, hf_norm, imf_to_band)
+    names = ('vlf_power', 'lf_power', 'hf_power', 'total_power', 'lf_hf_ratio',
+             'vlf_norm', 'lf_norm', 'hf_norm', 'imf_to_band')
+
+    return utils.ReturnTuple(args, names)
+
+
+def hht_nonlinear_features(rri=None, method='ceemdan', num_ensemble=100,
+                          noise_std=0.2, max_imf=None, sampling_rate=4.0,
+                          random_seed=None):
+    """Compute non-linear HRV features using HHT.
+
+    Extracts complexity and entropy measures from IMF decomposition.
+
+    Parameters
+    ----------
+    rri : array
+        RR-intervals (ms).
+    method : str, optional
+        Decomposition method. Default: 'ceemdan'.
+    num_ensemble : int, optional
+        Number of ensemble members. Default: 100.
+    noise_std : float, optional
+        Noise standard deviation. Default: 0.2.
+    max_imf : int, optional
+        Maximum number of IMFs. Default: None.
+    sampling_rate : float, optional
+        Sampling rate (Hz). Default: 4.0 Hz.
+    random_seed : int, optional
+        Random seed. Default: None.
+
+    Returns
+    -------
+    n_imfs : int
+        Number of extracted IMFs.
+    complexity_index : float
+        Complexity index (number of IMFs / log2(N)).
+    energy_entropy : float
+        Shannon entropy of energy distribution.
+    frequency_entropy : float
+        Shannon entropy of frequency distribution.
+    residue_std : float
+        Standard deviation of residue (trend component).
+    reconstruction_error : float
+        RMS error between original and reconstructed signal.
+
+    Notes
+    -----
+    - Complexity index: higher values indicate more complex variability
+    - Energy entropy: uniformity of energy distribution across IMFs
+    - Lower reconstruction error indicates better decomposition
+
+    Example
+    -------
+    >>> from biosppy.signals import hrv
+    >>> import numpy as np
+    >>> rri = np.random.randn(200) * 50 + 800
+    >>> result = hrv.hht_nonlinear_features(rri=rri)
+    >>> print(f"Complexity index: {result['complexity_index']:.2f}")
+    """
+    # Check inputs
+    if rri is None:
+        raise TypeError("Please specify RR-intervals.")
+
+    rri = np.array(rri, dtype=float)
+    n = len(rri)
+
+    # Perform HHT decomposition
+    hht_result = hht_variability(rri=rri, method=method, num_ensemble=num_ensemble,
+                                noise_std=noise_std, max_imf=max_imf,
+                                sampling_rate=sampling_rate, random_seed=random_seed)
+
+    imfs = hht_result['imfs']
+    residue = hht_result['residue']
+    imf_energy = hht_result['imf_energy']
+    energy_ratio = hht_result['energy_ratio']
+    total_energy = hht_result['total_energy']
+
+    n_imfs = len(imfs)
+
+    # Complexity index
+    max_complexity = np.log2(n)
+    if max_complexity > 0:
+        complexity_index = n_imfs / max_complexity
+    else:
+        complexity_index = 0.0
+
+    # Energy entropy (Shannon entropy of energy distribution)
+    energy_probs = energy_ratio[energy_ratio > 0]
+    if len(energy_probs) > 0:
+        energy_entropy = -np.sum(energy_probs * np.log2(energy_probs))
+    else:
+        energy_entropy = 0.0
+
+    # Frequency entropy (Shannon entropy of mean frequencies)
+    imf_freq_mean = hht_result['imf_frequency_mean']
+    freq_probs = imf_freq_mean / (np.sum(imf_freq_mean) + 1e-10)
+    freq_probs = freq_probs[freq_probs > 0]
+    if len(freq_probs) > 0:
+        frequency_entropy = -np.sum(freq_probs * np.log2(freq_probs))
+    else:
+        frequency_entropy = 0.0
+
+    # Residue standard deviation (trend variability)
+    residue_std = np.std(residue)
+
+    # Reconstruction error
+    reconstructed = np.sum(imfs, axis=0) + residue
+    reconstruction_error = np.sqrt(np.mean((rri - reconstructed) ** 2))
+
+    # Output
+    args = (n_imfs, complexity_index, energy_entropy, frequency_entropy,
+            residue_std, reconstruction_error)
+    names = ('n_imfs', 'complexity_index', 'energy_entropy', 'frequency_entropy',
+             'residue_std', 'reconstruction_error')
+
+    return utils.ReturnTuple(args, names)
