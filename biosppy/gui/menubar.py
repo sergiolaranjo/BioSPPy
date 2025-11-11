@@ -42,6 +42,9 @@ class MenuBar:
         # Analyze menu
         self._create_analyze_menu()
 
+        # Advanced menu
+        self._create_advanced_menu()
+
         # View menu
         self._create_view_menu()
 
@@ -225,21 +228,91 @@ class MenuBar:
         view_menu.add_command(label="Refresh", command=self.main_window.refresh_plot,
                             accelerator="F5")
 
+    def _create_advanced_menu(self):
+        """Create Advanced menu."""
+        advanced_menu = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="Advanced", menu=advanced_menu)
+
+        # Feature Extraction submenu
+        features_menu = tk.Menu(advanced_menu, tearoff=0)
+        features_menu.add_command(label="All Features...",
+                                 command=lambda: self.advanced_analysis('features'))
+        features_menu.add_separator()
+        features_menu.add_command(label="Time Domain Features...",
+                                 command=lambda: self.extract_features('time'))
+        features_menu.add_command(label="Frequency Domain Features...",
+                                 command=lambda: self.extract_features('frequency'))
+        features_menu.add_command(label="Time-Frequency Features...",
+                                 command=lambda: self.extract_features('time_freq'))
+        features_menu.add_command(label="Cepstral Features (MFCC)...",
+                                 command=lambda: self.extract_features('cepstral'))
+        features_menu.add_command(label="Phase Space Features...",
+                                 command=lambda: self.extract_features('nonlinear'))
+
+        advanced_menu.add_cascade(label="Feature Extraction", menu=features_menu)
+
+        # HRV Analysis submenu
+        hrv_menu = tk.Menu(advanced_menu, tearoff=0)
+        hrv_menu.add_command(label="Complete HRV Analysis...",
+                            command=lambda: self.advanced_analysis('hrv'))
+        hrv_menu.add_separator()
+        hrv_menu.add_command(label="Time-Domain HRV...",
+                            command=lambda: self.hrv_analysis('time'))
+        hrv_menu.add_command(label="Frequency-Domain HRV...",
+                            command=lambda: self.hrv_analysis('frequency'))
+        hrv_menu.add_command(label="Non-linear HRV...",
+                            command=lambda: self.hrv_analysis('nonlinear'))
+
+        advanced_menu.add_cascade(label="HRV Analysis", menu=hrv_menu)
+
+        # Signal Quality
+        advanced_menu.add_separator()
+        advanced_menu.add_command(label="Signal Quality Assessment...",
+                                 command=lambda: self.advanced_analysis('quality'))
+
+        # Clustering & Classification
+        advanced_menu.add_separator()
+        clustering_menu = tk.Menu(advanced_menu, tearoff=0)
+        clustering_menu.add_command(label="K-Means Clustering...",
+                                   command=lambda: self.clustering_analysis('kmeans'))
+        clustering_menu.add_command(label="DBSCAN Clustering...",
+                                   command=lambda: self.clustering_analysis('dbscan'))
+        clustering_menu.add_command(label="Hierarchical Clustering...",
+                                   command=lambda: self.clustering_analysis('hierarchical'))
+
+        advanced_menu.add_cascade(label="Clustering", menu=clustering_menu)
+
+        # Biometrics
+        advanced_menu.add_separator()
+        advanced_menu.add_command(label="Biometric Analysis...",
+                                 command=self.biometric_analysis)
+
     def _create_tools_menu(self):
         """Create Tools menu."""
         tools_menu = tk.Menu(self.menubar, tearoff=0)
         self.menubar.add_cascade(label="Tools", menu=tools_menu)
 
+        # Signal Processing Tools
+        tools_menu.add_command(label="Advanced Filter Design...",
+                             command=self.advanced_filter_design)
+        tools_menu.add_command(label="Signal Synthesis...",
+                             command=self.signal_synthesis)
+        tools_menu.add_command(label="Compare Signals...",
+                             command=self.compare_signals)
+
+        tools_menu.add_separator()
+
+        # Interactive Tools
         tools_menu.add_command(label="Selection Mode",
                              command=self.toggle_selection_mode)
         tools_menu.add_command(label="Annotation Tool",
                              command=self.annotation_tool)
 
         tools_menu.add_separator()
+
+        # Batch Operations
         tools_menu.add_command(label="Batch Processing...",
                              command=self.batch_processing)
-        tools_menu.add_command(label="Compare Signals...",
-                             command=self.compare_signals)
 
     def _create_help_menu(self):
         """Create Help menu."""
@@ -399,10 +472,6 @@ class MenuBar:
         from .dialogs import BatchProcessingDialog
         dialog = BatchProcessingDialog(self.root, self.main_window)
 
-    def compare_signals(self):
-        """Compare multiple signals."""
-        messagebox.showinfo("Compare", "Signal comparison to be implemented")
-
     # Help menu methods
     def show_help(self):
         """Show help documentation."""
@@ -463,3 +532,34 @@ A comprehensive toolbox for biosignal processing.
 https://github.com/scientisst/BioSPPy
 """
         messagebox.showinfo("About BioSPPy", about_text)
+
+    # Advanced menu methods
+    def advanced_analysis(self, analysis_type):
+        """Open advanced analysis dialog."""
+        from .advanced_analysis import AdvancedAnalysisDialog
+        dialog = AdvancedAnalysisDialog(self.root, self.main_window, analysis_type)
+
+    def clustering_analysis(self, algorithm):
+        """Open clustering analysis dialog."""
+        from .advanced_analysis import AdvancedAnalysisDialog
+        dialog = AdvancedAnalysisDialog(self.root, self.main_window, 'clustering')
+
+    def biometric_analysis(self):
+        """Open biometric analysis dialog."""
+        messagebox.showinfo("Biometrics", "Biometric analysis to be implemented")
+
+    # Tools menu methods (advanced)
+    def advanced_filter_design(self):
+        """Open advanced filter design dialog."""
+        from .signal_tools import FilterDesignDialog
+        dialog = FilterDesignDialog(self.root, self.main_window)
+
+    def signal_synthesis(self):
+        """Open signal synthesis dialog."""
+        from .signal_tools import SignalSynthesisDialog
+        dialog = SignalSynthesisDialog(self.root, self.main_window)
+
+    def compare_signals(self):
+        """Compare multiple signals."""
+        from .signal_tools import SignalComparisonDialog
+        dialog = SignalComparisonDialog(self.root, self.main_window)

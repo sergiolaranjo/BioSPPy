@@ -125,8 +125,11 @@ def test_file_structure():
             'context_menu.py',
             'dialogs.py',
             'plugins.py',
+            'advanced_analysis.py',
+            'signal_tools.py',
             'README.md',
-            'INSTALLATION.md'
+            'INSTALLATION.md',
+            'QUICKSTART.md'
         ]
 
         missing = []
