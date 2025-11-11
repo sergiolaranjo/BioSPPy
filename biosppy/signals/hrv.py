@@ -21,6 +21,7 @@ import numpy as np
 import warnings
 from scipy.interpolate import interp1d
 from scipy.signal import welch
+import matplotlib.pyplot as plt
 
 # local
 from .. import utils
@@ -1014,3 +1015,290 @@ def approximate_entropy(rri, m=2, r=0.2):
     n = len(rri)
 
     return _phi(m) - _phi(m + 1)
+
+
+def heart_rate_turbulence(rri=None, vpc_indices=None, coupling_interval_min=300,
+                          coupling_interval_max=2000, prematurity_threshold=0.8,
+                          compensatory_pause_threshold=1.2, show=False):
+    """Computes Heart Rate Turbulence (HRT) parameters from RR intervals.
+
+    Heart Rate Turbulence is a method to assess the autonomic cardiac response
+    following ventricular premature complexes (VPCs). The main parameters are:
+    - Turbulence Onset (TO): Initial acceleration of heart rate after VPC
+    - Turbulence Slope (TS): Subsequent deceleration of heart rate
+
+    Parameters
+    ----------
+    rri : array
+        RR-intervals (ms).
+    vpc_indices : array, optional
+        Indices of VPCs in the RRI sequence. If None, VPCs will be detected
+        automatically based on prematurity and compensatory pause criteria.
+    coupling_interval_min : float, optional
+        Minimum coupling interval (ms) to consider a VPC. Default: 300 ms.
+    coupling_interval_max : float, optional
+        Maximum coupling interval (ms) to consider a VPC. Default: 2000 ms.
+    prematurity_threshold : float, optional
+        Threshold for prematurity criterion (ratio to local average).
+        Default: 0.8 (VPC is 20% shorter than local average).
+    compensatory_pause_threshold : float, optional
+        Threshold for compensatory pause criterion (ratio to local average).
+        Default: 1.2 (compensatory pause is 20% longer than local average).
+    show : bool, optional
+        If True, show HRT plot. Default: False.
+
+    Returns
+    -------
+    to : float
+        Turbulence Onset (%) - Measures the initial heart rate acceleration
+        after VPC. Normal values: TO < 0%.
+    ts : float
+        Turbulence Slope (ms/RR) - Measures the subsequent heart rate
+        deceleration. Normal values: TS > 2.5 ms/RR.
+    vpc_count : int
+        Number of VPCs detected and used in the analysis.
+    vpc_indices : array
+        Indices of VPCs used in the analysis.
+
+    References
+    ----------
+    Schmidt G, et al. Heart-rate turbulence after ventricular premature beats
+    as a predictor of mortality after acute myocardial infarction.
+    Lancet. 1999;353(9162):1390-6.
+
+    Notes
+    -----
+    Standard HRT analysis requires:
+    - At least 5 VPCs for reliable analysis
+    - VPCs should be isolated (not part of couplets or runs)
+    - Surrounding RR intervals should be within physiological range
+    """
+
+    # check inputs
+    if rri is None:
+        raise TypeError("Please specify an RRI list or array.")
+
+    # ensure numpy
+    rri = np.array(rri, dtype=float)
+
+    # initialize outputs
+    out = utils.ReturnTuple((), ())
+
+    # detect VPCs if not provided
+    if vpc_indices is None:
+        vpc_indices = _detect_vpcs(rri,
+                                    coupling_interval_min=coupling_interval_min,
+                                    coupling_interval_max=coupling_interval_max,
+                                    prematurity_threshold=prematurity_threshold,
+                                    compensatory_pause_threshold=compensatory_pause_threshold)
+    else:
+        vpc_indices = np.array(vpc_indices, dtype=int)
+
+    vpc_count = len(vpc_indices)
+
+    # check if enough VPCs are available
+    if vpc_count < 1:
+        warnings.warn("No VPCs detected. Cannot compute HRT parameters.")
+        return out.append([np.nan, np.nan, 0, np.array([])],
+                         ['to', 'ts', 'vpc_count', 'vpc_indices'])
+
+    if vpc_count < 5:
+        warnings.warn(f"Only {vpc_count} VPC(s) detected. Standard HRT analysis "
+                     "requires at least 5 VPCs for reliable results.")
+
+    # compute turbulence onset (TO)
+    to_values = []
+    valid_vpcs = []
+
+    for vpc_idx in vpc_indices:
+        # need at least 2 RR intervals before and 2 after the VPC
+        if vpc_idx < 2 or vpc_idx + 2 >= len(rri):
+            continue
+
+        # RR intervals around VPC
+        rr_pre2 = rri[vpc_idx - 2]  # 2 intervals before
+        rr_pre1 = rri[vpc_idx - 1]  # 1 interval before
+        rr_vpc = rri[vpc_idx]        # coupling interval (to VPC)
+        rr_post1 = rri[vpc_idx + 1]  # 1 interval after (compensatory pause)
+        rr_post2 = rri[vpc_idx + 2]  # 2 intervals after
+
+        # compute TO for this VPC
+        # TO = [(RR1 + RR2) - (RR-2 + RR-1)] / (RR-2 + RR-1) × 100%
+        denominator = rr_pre2 + rr_pre1
+        if denominator > 0:
+            to = ((rr_post1 + rr_post2) - denominator) / denominator * 100
+            to_values.append(to)
+            valid_vpcs.append(vpc_idx)
+
+    # compute mean TO
+    if len(to_values) > 0:
+        to = np.mean(to_values)
+    else:
+        to = np.nan
+        warnings.warn("Could not compute TO. No valid VPCs with sufficient "
+                     "surrounding intervals.")
+
+    # compute turbulence slope (TS)
+    ts_values = []
+
+    for vpc_idx in valid_vpcs:
+        # need at least 15 RR intervals after VPC for TS calculation
+        if vpc_idx + 15 >= len(rri):
+            continue
+
+        # get 15 RR intervals after the compensatory pause
+        rr_sequence = rri[vpc_idx + 2:vpc_idx + 17]
+
+        # compute maximum slope of any 5 consecutive RR intervals
+        max_slope = -np.inf
+
+        for i in range(len(rr_sequence) - 4):
+            # 5 consecutive intervals
+            rr_window = rr_sequence[i:i + 5]
+            x = np.arange(5)
+
+            # linear regression
+            slope = np.polyfit(x, rr_window, 1)[0]
+
+            if slope > max_slope:
+                max_slope = slope
+
+        if max_slope > -np.inf:
+            ts_values.append(max_slope)
+
+    # compute mean TS
+    if len(ts_values) > 0:
+        ts = np.mean(ts_values)
+    else:
+        ts = np.nan
+        warnings.warn("Could not compute TS. No valid VPCs with sufficient "
+                     "post-VPC intervals.")
+
+    # prepare output
+    valid_vpcs = np.array(valid_vpcs)
+    out = out.append([to, ts, len(valid_vpcs), valid_vpcs],
+                    ['to', 'ts', 'vpc_count', 'vpc_indices'])
+
+    # plot
+    if show:
+        _plot_hrt(rri, valid_vpcs, to, ts)
+
+    return out
+
+
+def _detect_vpcs(rri, coupling_interval_min=300, coupling_interval_max=2000,
+                 prematurity_threshold=0.8, compensatory_pause_threshold=1.2):
+    """Detects ventricular premature complexes (VPCs) in RRI sequence.
+
+    Parameters
+    ----------
+    rri : array
+        RR-intervals (ms).
+    coupling_interval_min : float
+        Minimum coupling interval (ms).
+    coupling_interval_max : float
+        Maximum coupling interval (ms).
+    prematurity_threshold : float
+        Prematurity criterion threshold.
+    compensatory_pause_threshold : float
+        Compensatory pause criterion threshold.
+
+    Returns
+    -------
+    vpc_indices : array
+        Indices of detected VPCs.
+    """
+
+    vpc_indices = []
+
+    # compute local average using sliding window
+    window_size = 5
+    local_avg = np.convolve(rri, np.ones(window_size)/window_size, mode='same')
+
+    for i in range(1, len(rri) - 1):
+        # get current and next RR interval
+        rr_current = rri[i]
+        rr_next = rri[i + 1]
+
+        # check coupling interval range
+        if rr_current < coupling_interval_min or rr_current > coupling_interval_max:
+            continue
+
+        # check prematurity criterion
+        # VPC coupling interval should be shorter than local average
+        if rr_current > prematurity_threshold * local_avg[i]:
+            continue
+
+        # check compensatory pause criterion
+        # Post-VPC interval should be longer than local average
+        if rr_next < compensatory_pause_threshold * local_avg[i]:
+            continue
+
+        # check that it's not part of a couplet or run
+        # (i.e., previous interval should be normal)
+        if i > 1:
+            rr_prev = rri[i - 1]
+            if rr_prev < prematurity_threshold * local_avg[i - 1]:
+                continue
+
+        vpc_indices.append(i)
+
+    return np.array(vpc_indices, dtype=int)
+
+
+def _plot_hrt(rri, vpc_indices, to, ts):
+    """Plots Heart Rate Turbulence analysis results.
+
+    Parameters
+    ----------
+    rri : array
+        RR-intervals (ms).
+    vpc_indices : array
+        Indices of VPCs.
+    to : float
+        Turbulence Onset.
+    ts : float
+        Turbulence Slope.
+    """
+
+    # average RR intervals around VPCs
+    window_pre = 5
+    window_post = 20
+
+    averaged_rr = None
+    count = 0
+
+    for vpc_idx in vpc_indices:
+        if vpc_idx < window_pre or vpc_idx + window_post >= len(rri):
+            continue
+
+        # extract window around VPC
+        window = rri[vpc_idx - window_pre:vpc_idx + window_post + 1]
+
+        if averaged_rr is None:
+            averaged_rr = window.copy()
+        else:
+            averaged_rr += window
+
+        count += 1
+
+    if count > 0 and averaged_rr is not None:
+        averaged_rr /= count
+
+        # create time axis relative to VPC
+        time_axis = np.arange(-window_pre, window_post + 1)
+
+        # plot
+        plt.figure(figsize=(10, 6))
+        plt.plot(time_axis, averaged_rr, 'b-', linewidth=2)
+        plt.axvline(x=0, color='r', linestyle='--', label='VPC')
+        plt.xlabel('RR Interval Index (relative to VPC)')
+        plt.ylabel('RR Interval (ms)')
+        plt.title(f'Heart Rate Turbulence\nTO = {to:.2f}%, TS = {ts:.2f} ms/RR')
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        plt.tight_layout()
+        plt.show()
+    else:
+        warnings.warn("Could not generate HRT plot. No valid VPCs with "
+                     "sufficient surrounding intervals.")
