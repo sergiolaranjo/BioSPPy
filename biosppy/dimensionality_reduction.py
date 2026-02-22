@@ -357,14 +357,21 @@ def tsne(data=None, n_components=2, perplexity=30.0, learning_rate='auto',
     data = np.atleast_2d(data)
 
     # fit t-SNE
-    tsne_model = TSNE(
+    tsne_kwargs = dict(
         n_components=n_components,
         perplexity=perplexity,
         learning_rate=learning_rate,
-        n_iter=n_iter,
         metric=metric,
         random_state=random_state
     )
+    # scikit-learn >= 1.6 renamed n_iter to max_iter
+    import inspect
+    tsne_params = inspect.signature(TSNE).parameters
+    if 'max_iter' in tsne_params:
+        tsne_kwargs['max_iter'] = n_iter
+    else:
+        tsne_kwargs['n_iter'] = n_iter
+    tsne_model = TSNE(**tsne_kwargs)
     embedding = tsne_model.fit_transform(data)
 
     # prepare output

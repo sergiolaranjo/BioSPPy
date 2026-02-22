@@ -222,7 +222,7 @@ def alloc_h5(path):
     # normalize path
     path = utils.normpath(path)
 
-    with h5py.File(path):
+    with h5py.File(path, 'w'):
         pass
 
 
@@ -243,7 +243,7 @@ def store_h5(path, label, data):
     # normalize path
     path = utils.normpath(path)
 
-    with h5py.File(path) as fid:
+    with h5py.File(path, 'a') as fid:
         label = str(label)
 
         try:
@@ -357,7 +357,7 @@ def store_txt(path, data, sampling_rate=1000., resolution=None, date=None,
     p = '%d' % precision
     if np.issubdtype(data.dtype, np.integer):
         fmt = '%d'
-    elif np.issubdtype(data.dtype, np.float):
+    elif np.issubdtype(data.dtype, np.floating):
         fmt = '%%.%sf' % p
     elif np.issubdtype(data.dtype, np.bool_):
         fmt = '%d'

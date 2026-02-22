@@ -598,7 +598,7 @@ def kbk_scr(signal=None, sampling_rate=1000.0, min_amplitude=0.1):
     thr = min_amplitude * np.max(amps)
     idx = np.where(amps > thr)
 
-    scrs = np.array(scrs, dtype=np.object)[idx]
+    scrs = np.array(scrs, dtype=object)[idx]
     amps = np.array(amps)[idx]
     ZC = np.array(ZC)[np.array(idx) * 2]
     peaks = np.array(peaks, dtype=int)[idx]

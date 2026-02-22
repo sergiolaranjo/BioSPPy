@@ -3006,7 +3006,8 @@ def fSQI(
 
     def power_in_range(f_range, f, Pxx_den):
         _indexes = np.where((f >= f_range[0]) & (f <= f_range[1]))[0]
-        _power = integrate.trapz(Pxx_den[_indexes], f[_indexes])
+        _trapz = getattr(integrate, 'trapezoid', getattr(integrate, 'trapz', None))
+        _power = _trapz(Pxx_den[_indexes], f[_indexes])
         return _power
 
     if ecg_signal is None:

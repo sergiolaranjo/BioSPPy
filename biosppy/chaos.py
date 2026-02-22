@@ -447,7 +447,8 @@ def permutation_entropy(signal=None, order=3, delay=1, normalize=True):
 
     # normalize if requested
     if normalize:
-        max_pe = np.log2(np.math.factorial(order))
+        import math
+        max_pe = np.log2(float(math.factorial(order)))
         pe = pe / max_pe
 
     return utils.ReturnTuple((pe, order), ('pe', 'order'))
