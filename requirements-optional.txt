@@ -1,0 +1,11 @@
+# Optional dependencies for BioSPPy
+# Install with: pip install -r requirements-optional.txt
+
+# For EDA signal processing
+cvxopt>=1.2.0
+
+# For WFDB (PhysioNet) format support
+wfdb>=3.0.0
+
+# For BioSig multi-format support
+pyBioSig>=2.0.0

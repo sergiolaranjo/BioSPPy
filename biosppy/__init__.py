@@ -20,3 +20,4 @@ from .signals import acc, abp, bvp, ppg, pcg, ecg, eda, eeg, emg, resp, tools, h
 from .synthesizers import ecg, emg
 # from .inter_plotting import ecg, acc
 from .features import frequency, time, time_freq, cepstral, phase_space
+from . import dimensionality_reduction, chaos
