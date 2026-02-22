@@ -146,6 +146,46 @@ def hosSQI(signal=None, quantitative=False, verbose=1):
 
 ---
 
+### BUG-C10: `quality.py:271,321` - String formatting crashes at runtime
+
+```python
+# Line 271:
+print('cSQI is {:.2f} -> {str_level}'.format(cSQI, str_level=str_level))
+# Line 321:
+print('hosSQI is {:.2f} -> {str_level}'.format(hosSQI, str_level=str_level))
+
+# These crash with KeyError because {str_level} is not a valid format spec
+# FIX: use f-strings or positional arguments
+```
+
+**Impact**: `cSQI()` and `hosSQI()` crash when `verbose=1` (the default!).
+
+---
+
+### BUG-C11: `quality.py:182` - `np.corrcoef()` biased by self-correlations
+
+```python
+templates, _ = ecg.extract_heartbeats(...)
+corr_points = np.corrcoef(templates)
+if np.mean(corr_points) > threshold:
+    quality = HQ
+```
+
+**Impact**: `np.corrcoef(templates)` returns NxN matrix including diagonal (self-correlation = 1.0). `np.mean()` is biased upward, making quality assessment unreliable. Should exclude diagonal or use off-diagonal mean.
+
+---
+
+### BUG-C12: `inter_plotting/acc.py:220-221` - Uninitialized global variables
+
+```python
+global feat_fig      # Never initialized at module level
+global toolbarfeat   # Never initialized at module level
+```
+
+**Impact**: Clicking feature buttons in wrong order causes `NameError` crash.
+
+---
+
 ## 2. High Priority Bugs
 
 ### BUG-H01: `ecg.py:518-519` - Division by zero in `compare_segmentation()`
@@ -278,6 +318,26 @@ if fundamental_frequency < (sampling_rate / 2 - 2):
 
 ---
 
+### BUG-H13: `chaos.py:660` - Empty array in `np.polyfit()` for Higuchi fractal dimension
+
+```python
+if len(k_valid) < 2:
+    raise ValueError(...)
+coeffs = np.polyfit(np.log(k_valid), np.log(lengths_valid), 1)
+# lengths_valid can be all zeros -> np.log(0) = -inf -> polyfit fails
+```
+
+---
+
+### BUG-H14: `chaos.py:881` - Fragile array length matching in Hurst exponent
+
+```python
+coeffs = np.polyfit(np.log(window_sizes[:len(rs_values)]), np.log(rs_values), 1)
+# If some windows produced no data, lengths silently mismatch
+```
+
+---
+
 ## 3. Medium Priority Issues
 
 ### BUG-M01: `eda.py:198-201` - Silent exception swallows division by zero
@@ -391,6 +451,28 @@ spectral_roll_off = freqs[np.argwhere(norm_cm_s >= 0.95)[0][0]]
 
 ---
 
+### BUG-M12: `chaos.py:361` - Bare `except Exception` swallows all errors
+
+```python
+try:
+    result = entropy_fn(...)
+except Exception:
+    mse_values.append(np.nan)   # Silently swallows real errors
+# Should catch specific: (ValueError, RuntimeError, ZeroDivisionError)
+```
+
+---
+
+### BUG-M13: `features/time.py:172-191` - Library code prints to stdout
+
+```python
+if signal_mobility is None:
+    print("Hjorth mobility is undefined. Returning None.")
+# Should use logging module or suppress entirely
+```
+
+---
+
 ## 4. Low Priority Issues
 
 | ID | File:Line | Issue |
@@ -402,7 +484,7 @@ spectral_roll_off = freqs[np.argwhere(norm_cm_s >= 0.95)[0][0]]
 | L05 | `inter_plotting/acc.py:1-10` | Docstring says "ecg plot" but file is `acc.py` |
 | L06 | `inter_plotting/acc.py,ecg.py` | File extension bug same as BUG-H05 |
 | L07 | `ecg.py:318` | Docstring says `int` but parameter accepts `float` |
-| L08 | `quality.py:271,321` | String formatting uses `{str_level}` with keyword arg |
+| L08 | `chaos.py:450` | `import math` inside function instead of module level |
 
 ---
 
@@ -595,29 +677,31 @@ def get_filter(ftype, band, order, frequency, sampling_rate):
 
 | Category | Count |
 |----------|-------|
-| Critical Bugs | 9 |
-| High Priority Bugs | 12 |
-| Medium Priority Issues | 11 |
+| Critical Bugs | 12 |
+| High Priority Bugs | 14 |
+| Medium Priority Issues | 13 |
 | Low Priority Issues | 8 |
 | Optimization Opportunities | 6 |
 | New Algorithms Proposed | 50+ |
-| **Total Issues Found** | **40** |
+| **Total Issues Found** | **47** |
 
 ### Files with Most Issues
 
 | File | Issues | Critical |
 |------|--------|----------|
+| `quality.py` | 9 | 6 |
 | `ecg.py` | 8 | 2 |
-| `quality.py` | 6 | 4 |
-| `plotting.py` | 2 | 1 |
 | `storage.py` | 4 | 2 |
+| `frequency.py` | 3 | 0 |
+| `chaos.py` | 4 | 0 |
+| `plotting.py` | 2 | 1 |
 | `clustering.py` | 2 | 0 |
 | `eda.py` | 3 | 0 |
 | `emg.py` | 3 | 0 |
 | `pcg.py` | 3 | 1 |
 | `tools.py` | 3 | 0 |
-| `frequency.py` | 3 | 0 |
 | `phase_space.py` | 1 | 0 |
+| `inter_plotting/acc.py` | 2 | 1 |
 
 ### Recommended Fix Priority
 
