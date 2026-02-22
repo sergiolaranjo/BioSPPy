@@ -167,6 +167,7 @@ def ecg(
     # segment
     segmenters = {
         "hamilton": hamilton_segmenter,
+        "christov": christov_segmenter,
         "ASI": ASI_segmenter,
         "gamboa": gamboa_segmenter,
         "engzee": engzee_segmenter,
@@ -2028,8 +2029,8 @@ def elgendi_segmenter(signal=None, sampling_rate=1000.0):
     ma_qrs, _ = st.smoother(squared, kernel='boxcar', size=w1)
     ma_beat, _ = st.smoother(squared, kernel='boxcar', size=w2)
 
-    # threshold: beat MA + offset
-    beta = 0.02
+    # threshold: beat MA + offset (beta=0.08 per Elgendi 2013 optimization)
+    beta = 0.08
     thr = ma_beat + beta * np.mean(squared)
 
     # blocks of interest where QRS MA > threshold
@@ -2076,9 +2077,10 @@ def elgendi_segmenter(signal=None, sampling_rate=1000.0):
 def kalidas_segmenter(signal=None, sampling_rate=1000.0):
     """R-peak detection using Stationary Wavelet Transform (SWT).
 
-    Uses the stationary wavelet transform with the 'db3' wavelet to
-    decompose the ECG signal. Detail coefficients at appropriate scales
-    are combined and thresholded for QRS detection.
+    Uses the stationary wavelet transform with the 'db3' wavelet at level 3
+    to extract QRS-related detail coefficients. Applies squared-energy
+    moving window integration followed by Pan-Tompkins adaptive thresholding
+    with searchback for missed beats.
 
     Parameters
     ----------
@@ -2095,7 +2097,8 @@ def kalidas_segmenter(signal=None, sampling_rate=1000.0):
     References
     ----------
     Kalidas V, Tamil LS. "Real-time QRS detector using Stationary Wavelet
-    Transform for Automated ECG Analysis." Proc. IEEE EMBS BHI. 2017.
+    Transform for Automated ECG Analysis." Proc. IEEE 17th Int. Conf.
+    Bioinformatics and Bioengineering (BIBE), pp. 457-461, 2017.
     """
 
     if signal is None:
@@ -2106,58 +2109,88 @@ def kalidas_segmenter(signal=None, sampling_rate=1000.0):
 
     import pywt
 
-    # pad signal to power of 2 for SWT
     n = len(signal)
-    level = 4  # decomposition level
-    pad_len = int(2 ** np.ceil(np.log2(n))) - n
-    if pad_len > 0:
-        signal_padded = np.pad(signal, (0, pad_len), mode='reflect')
+    swt_level = 3
+
+    # pad signal to length divisible by 2^swt_level
+    remainder = n % (2 ** swt_level)
+    if remainder != 0:
+        pad_len = (2 ** swt_level) - remainder
+        signal_padded = np.pad(signal, (0, pad_len), mode='edge')
     else:
-        signal_padded = signal
+        signal_padded = signal.copy()
 
-    # stationary wavelet transform
-    coeffs = pywt.swt(signal_padded, 'db3', level=level)
+    # SWT decomposition with db3 wavelet, level 3
+    coeffs = pywt.swt(signal_padded, 'db3', level=swt_level)
 
-    # select detail coefficients at scale 2^1 and 2^2
-    # (these correspond to QRS frequency content)
-    # coeffs[level-1] is level 1 (highest freq), coeffs[level-2] is level 2
-    d1 = coeffs[-1][1][:n]  # detail level 1
-    d2 = coeffs[-2][1][:n]  # detail level 2
+    # extract level-3 detail coefficients (captures QRS content)
+    # coeffs[0] is the highest level (level 3), [1] is the detail part
+    d3 = coeffs[0][1][:n]
 
-    # combine detail coefficients
-    combined = d1 ** 2 + d2 ** 2
+    # square the detail coefficients
+    squared = d3 ** 2
 
-    # adaptive threshold
-    thr = np.mean(combined) + 0.5 * np.std(combined)
+    # moving window integration (window = max QRS duration ~150ms)
+    mwi_width = max(1, int(0.150 * sampling_rate))
+    mwi = np.convolve(squared, np.ones(mwi_width) / mwi_width, mode='same')
 
-    # find regions above threshold
-    above = (combined > thr).astype(int)
-    diff_above = np.diff(above)
-    starts = np.where(diff_above == 1)[0] + 1
-    ends = np.where(diff_above == -1)[0] + 1
+    # blank initial transient
+    blank = min(int(0.3 * sampling_rate), len(mwi) - 1)
+    mwi[:blank] = 0
 
-    if len(starts) == 0 or len(ends) == 0:
+    # Pan-Tompkins adaptive thresholding
+    min_distance = int(0.3 * sampling_rate)
+    min_missed_dist = int(0.25 * sampling_rate)
+
+    # find all local maxima
+    all_peaks, _ = ss.find_peaks(mwi, distance=max(1, min_distance // 2))
+
+    if len(all_peaks) == 0:
         return utils.ReturnTuple((np.array([], dtype=int),), ('rpeaks',))
 
-    if ends[0] < starts[0]:
-        ends = ends[1:]
-    n_regions = min(len(starts), len(ends))
+    # adaptive SPKI/NPKI thresholding
+    spki = 0.0
+    npki = 0.0
+    signal_peaks = []
+    signal_peak_indices = []
 
-    # find R-peaks as maximum of original signal within each region
+    for idx, peak in enumerate(all_peaks):
+        peak_value = mwi[peak]
+        thr1 = npki + 0.25 * (spki - npki)
+
+        if peak_value > thr1 and (len(signal_peaks) == 0 or
+                                   peak - signal_peaks[-1] > min_distance):
+            # searchback for missed beats
+            if len(signal_peaks) > 8:
+                rr_ave = (signal_peaks[-1] - signal_peaks[-8]) / 8
+                rr_missed = int(1.66 * rr_ave)
+                if peak - signal_peaks[-1] > rr_missed:
+                    # search for missed beat
+                    last_idx = signal_peak_indices[-1]
+                    missed = all_peaks[(all_peaks > signal_peaks[-1] + min_missed_dist) &
+                                       (all_peaks < peak - min_missed_dist)]
+                    thr2 = 0.5 * thr1
+                    missed = missed[mwi[missed] > thr2]
+                    if len(missed) > 0:
+                        best = missed[np.argmax(mwi[missed])]
+                        signal_peaks.append(best)
+                        signal_peak_indices.append(idx)
+
+            signal_peaks.append(peak)
+            signal_peak_indices.append(idx)
+            spki = 0.125 * peak_value + 0.875 * spki
+        else:
+            npki = 0.125 * peak_value + 0.875 * npki
+
+    # refine: find actual R-peak in original signal around each detection
     rpeaks = []
-    min_delay = int(0.2 * sampling_rate)
-
-    for i in range(n_regions):
-        beg = starts[i]
-        end = ends[i]
-
-        if end > len(signal):
-            end = len(signal)
-
-        peak_idx = beg + np.argmax(np.abs(signal[beg:end]))
-
-        if len(rpeaks) == 0 or (peak_idx - rpeaks[-1]) > min_delay:
-            rpeaks.append(peak_idx)
+    search_win = int(0.05 * sampling_rate)
+    for sp in signal_peaks:
+        beg = max(0, sp - search_win)
+        end = min(n, sp + search_win)
+        rpeak = beg + np.argmax(signal[beg:end])
+        if len(rpeaks) == 0 or rpeak - rpeaks[-1] > int(0.2 * sampling_rate):
+            rpeaks.append(rpeak)
 
     rpeaks = np.array(rpeaks, dtype=int)
 
@@ -2165,11 +2198,12 @@ def kalidas_segmenter(signal=None, sampling_rate=1000.0):
 
 
 def nabian_segmenter(signal=None, sampling_rate=1000.0):
-    """R-peak detection using a gradient-based approach.
+    """R-peak detection using the sliding window maximum approach.
 
-    A simple, fast, gradient-based QRS detector suitable for real-time
-    applications. Uses the first derivative magnitude and adaptive
-    thresholding.
+    For each sample, checks whether it is the maximum within a surrounding
+    window of 400ms on each side (800ms total). If so, it must be a
+    dominant local peak (likely an R-peak). Very simple and suitable for
+    real-time streaming applications.
 
     Parameters
     ----------
@@ -2185,9 +2219,9 @@ def nabian_segmenter(signal=None, sampling_rate=1000.0):
 
     References
     ----------
-    Nabian M, Yin Y, Wormwood J, Quigley KS, Barrett LF, Bhatt S.
+    Nabian M, Yin Y, Wormwood J, Quigley KS, Barrett LF, Ostadabbas S.
     "An Open-Source Feature Extraction Tool for the Analysis of Peripheral
-    Physiological Data." Sensors. 2018;18(11):3779.
+    Physiological Data." IEEE J Transl Eng Health Med. 2018;6:1-11.
     """
 
     if signal is None:
@@ -2196,45 +2230,24 @@ def nabian_segmenter(signal=None, sampling_rate=1000.0):
     signal = np.array(signal, dtype=float)
     sampling_rate = float(sampling_rate)
 
-    # bandpass filter 3-45 Hz
-    filtered, _, _ = st.filter_signal(signal=signal,
-                                       ftype='butter',
-                                       band='bandpass',
-                                       order=2,
-                                       frequency=[3, 45],
-                                       sampling_rate=sampling_rate)
+    # 400ms window on each side (heart rate cannot exceed ~150 bpm safely,
+    # so two R-peaks cannot appear within 400ms)
+    window_size = int(0.4 * sampling_rate)
 
-    # compute gradient magnitude
-    grad = np.abs(np.gradient(filtered))
+    if window_size < 1:
+        window_size = 1
 
-    # square the gradient
-    grad_sq = grad ** 2
+    n = len(signal)
+    peaks = []
 
-    # moving average window (~100ms)
-    window = int(0.1 * sampling_rate)
-    if window < 1:
-        window = 1
-    ma, _ = st.smoother(grad_sq, kernel='boxcar', size=window)
+    # for each sample, check if it's the maximum in the surrounding window
+    for i in range(window_size, n - window_size):
+        beg = i - window_size
+        end = i + window_size
+        if signal[i] == np.max(signal[beg:end]):
+            peaks.append(i)
 
-    # adaptive threshold (mean + factor * std)
-    thr = np.mean(ma) + 0.6 * np.std(ma)
-
-    # find peaks above threshold
-    candidates, _ = ss.find_peaks(ma, height=thr,
-                                   distance=int(0.3 * sampling_rate))
-
-    # refine: find actual R-peak in original signal around each candidate
-    rpeaks = []
-    search_window = int(0.05 * sampling_rate)
-
-    for c in candidates:
-        beg = max(0, c - search_window)
-        end = min(len(signal), c + search_window)
-        rpeak = beg + np.argmax(signal[beg:end])
-        if len(rpeaks) == 0 or (rpeak - rpeaks[-1]) > int(0.2 * sampling_rate):
-            rpeaks.append(rpeak)
-
-    rpeaks = np.array(rpeaks, dtype=int)
+    rpeaks = np.array(peaks, dtype=int)
 
     return utils.ReturnTuple((rpeaks,), ('rpeaks',))
 
