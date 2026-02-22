@@ -2240,12 +2240,12 @@ def nabian_segmenter(signal=None, sampling_rate=1000.0):
 
 
 def ecg_wavelet_delineation(signal=None, rpeaks=None, sampling_rate=1000.0):
-    """ECG wave delineation using the Discrete Wavelet Transform.
+    """ECG wave delineation using the Martinez et al. (2004) wavelet algorithm.
 
-    Detects P-wave, QRS complex, and T-wave boundaries (onset, peak, offset)
-    using multi-scale wavelet analysis. This is based on the approach by
-    Martinez et al. (2004) which uses zero-crossings and modulus maxima
-    of the wavelet transform at multiple scales.
+    Uses the undecimated (a trous) dyadic wavelet transform with a quadratic
+    spline wavelet to detect P-wave, QRS complex, and T-wave boundaries.
+    The wavelet transform's zero-crossings correspond to peaks in the smoothed
+    signal, while modulus maxima correspond to steepest slopes.
 
     Parameters
     ----------
@@ -2295,10 +2295,9 @@ def ecg_wavelet_delineation(signal=None, rpeaks=None, sampling_rate=1000.0):
 
     Notes
     -----
-    * Uses a multi-resolution approach with the 'db4' wavelet.
-    * P and T waves are searched in physiologically plausible windows
-      relative to R-peaks.
-    * QRS boundaries are detected using gradient analysis near R-peaks.
+    * Internally resamples to 250 Hz (the algorithm's design frequency).
+    * Uses the quadratic spline wavelet via the a trous algorithm.
+    * Handles monophasic and biphasic P/T waves.
     * QTc is computed using Bazett's formula: QTc = QT / sqrt(RR).
     """
 
@@ -2312,154 +2311,355 @@ def ecg_wavelet_delineation(signal=None, rpeaks=None, sampling_rate=1000.0):
     if len(rpeaks) < 3:
         raise ValueError("Need at least 3 R-peaks for delineation.")
 
-    import pywt
+    # --- Internal resampling to 250 Hz ---
+    target_fs = 250.0
+    if abs(sampling_rate - target_fs) > 1.0:
+        from scipy.signal import resample as _resample
+        n_orig = len(signal)
+        n_target = int(round(n_orig * target_fs / sampling_rate))
+        sig250 = _resample(signal, n_target)
+        rp250 = np.round(rpeaks * target_fs / sampling_rate).astype(int)
+        rp250 = np.clip(rp250, 0, len(sig250) - 1)
+        scale_factor = sampling_rate / target_fs
+    else:
+        sig250 = signal
+        rp250 = rpeaks.copy()
+        target_fs = sampling_rate
+        scale_factor = 1.0
 
-    # compute wavelet transform at multiple scales
-    # Use db4 wavelet, 4 levels of decomposition
-    wavelet = 'db4'
-    max_level = 4
-    coeffs = pywt.wavedec(signal, wavelet, level=max_level)
+    N = len(sig250)
 
-    # reconstruct detail signals at each level
-    details = []
-    for i in range(1, max_level + 1):
-        # reconstruct signal from level i detail coefficients only
-        c = [np.zeros_like(c) for c in coeffs]
-        c[i] = coeffs[i]
-        detail = pywt.waverec(c, wavelet)[:len(signal)]
-        details.append(detail)
+    # --- A trous wavelet transform with quadratic spline wavelet ---
+    # H = [1/8, 3/8, 3/8, 1/8] (low-pass smoothing)
+    # G = [2, -2] (high-pass detail / first derivative)
+    max_scale = 5
+    w = np.zeros((max_scale, N))  # wavelet coefficients at scales 2^1..2^5
 
-    # detail at level 2-3 is best for QRS, level 3-4 for P and T waves
-    d2 = details[1]  # level 2 detail
-    d3 = details[2]  # level 3 detail
-    d4 = details[3]  # level 4 detail
+    approx = sig250.copy()
+    for k in range(max_scale):
+        gap = 2 ** k  # zero-insertion gap
 
-    # initialize output arrays
+        # high-pass (detail) convolution with G upsampled
+        detail = np.zeros(N)
+        for n in range(N):
+            idx0 = n
+            idx1 = n - gap
+            v0 = approx[idx0] if 0 <= idx0 < N else 0.0
+            v1 = approx[idx1] if 0 <= idx1 < N else 0.0
+            detail[n] = 2.0 * v0 - 2.0 * v1
+        w[k] = detail
+
+        # low-pass (smoothing) convolution with H upsampled
+        new_approx = np.zeros(N)
+        h_coeffs = [1.0 / 8, 3.0 / 8, 3.0 / 8, 1.0 / 8]
+        h_offsets = [0, gap, 2 * gap, 3 * gap]
+        for n in range(N):
+            val = 0.0
+            for ci, oi in zip(h_coeffs, h_offsets):
+                idx = n - oi
+                if 0 <= idx < N:
+                    val += ci * approx[idx]
+            new_approx[n] = val
+        approx = new_approx
+
+    # --- Helper: find modulus maxima in a segment ---
+    def _find_mml(wk, start, end, thresh):
+        """Find local maxima of |wk| that exceed thresh in [start, end)."""
+        start = max(0, int(start))
+        end = min(N, int(end))
+        if end - start < 3:
+            return np.array([], dtype=int)
+        seg = np.abs(wk[start:end])
+        mml = []
+        for j in range(1, len(seg) - 1):
+            if seg[j] > seg[j - 1] and seg[j] >= seg[j + 1] and seg[j] > thresh:
+                mml.append(start + j)
+        return np.array(mml, dtype=int)
+
+    def _find_zero_crossing(wk, a, b):
+        """Find zero-crossing of wk between indices a and b."""
+        a, b = int(a), int(b)
+        if a >= b or a < 0 or b >= N:
+            return (a + b) // 2
+        seg = wk[a:b + 1]
+        # zero-crossing = location of minimum absolute value
+        return a + np.argmin(np.abs(seg))
+
+    # RMS thresholds per scale
+    eps = np.array([np.sqrt(np.mean(w[k] ** 2)) for k in range(max_scale)])
+
+    # --- Initialize output arrays ---
+    n_beats = len(rp250)
+    p_onsets_250 = np.full(n_beats, -1, dtype=int)
+    p_peaks_250 = np.full(n_beats, -1, dtype=int)
+    p_offsets_250 = np.full(n_beats, -1, dtype=int)
+    qrs_onsets_250 = np.full(n_beats, -1, dtype=int)
+    q_peaks_250 = np.full(n_beats, -1, dtype=int)
+    s_peaks_250 = np.full(n_beats, -1, dtype=int)
+    qrs_offsets_250 = np.full(n_beats, -1, dtype=int)
+    t_onsets_250 = np.full(n_beats, -1, dtype=int)
+    t_peaks_250 = np.full(n_beats, -1, dtype=int)
+    t_offsets_250 = np.full(n_beats, -1, dtype=int)
+
+    # scale 2^2 (index 1) for QRS, scale 2^4 (index 3) for P and T waves
+    w_qrs = w[1]   # scale 2^2
+    w_pt = w[3]    # scale 2^4
+
+    for i, rpeak in enumerate(rp250):
+        rr_before = (rp250[i] - rp250[i - 1]) if i > 0 else int(0.8 * target_fs)
+        rr_after = (rp250[i + 1] - rp250[i]) if i < n_beats - 1 else int(0.8 * target_fs)
+
+        # ==================== QRS Delineation ====================
+        win_qrs = int(0.065 * target_fs)  # 65ms window
+        qrs_beg = max(0, rpeak - win_qrs)
+        qrs_end = min(N, rpeak + win_qrs)
+
+        # Find MML in QRS region at scale 2^2
+        qrs_peak_amp = np.max(np.abs(w_qrs[qrs_beg:qrs_end])) if qrs_end > qrs_beg else 0
+        qrs_thresh = 0.01 * qrs_peak_amp
+        mml_qrs = _find_mml(w_qrs, qrs_beg, qrs_end, qrs_thresh)
+
+        if len(mml_qrs) >= 2:
+            # Find Q, R, S peaks via zero-crossings between opposite-sign MML
+            for j in range(len(mml_qrs) - 1):
+                m1, m2 = mml_qrs[j], mml_qrs[j + 1]
+                if w_qrs[m1] * w_qrs[m2] < 0:  # opposite signs
+                    zc = _find_zero_crossing(w_qrs, m1, m2)
+
+                    if w_qrs[m1] > 0:
+                        # positive-then-negative = positive peak (R wave)
+                        pass  # R-peak already known
+                    else:
+                        # negative-then-positive = negative peak (Q or S)
+                        if zc < rpeak:
+                            q_peaks_250[i] = zc
+                        else:
+                            s_peaks_250[i] = zc
+
+            # If Q not found via zero-crossings, use signal minimum
+            if q_peaks_250[i] < 0:
+                q_start = max(0, rpeak - int(0.08 * target_fs))
+                seg = sig250[q_start:rpeak]
+                if len(seg) > 0:
+                    q_peaks_250[i] = q_start + np.argmin(seg)
+
+            if s_peaks_250[i] < 0:
+                s_end = min(N, rpeak + int(0.08 * target_fs))
+                seg = sig250[rpeak:s_end]
+                if len(seg) > 1:
+                    s_peaks_250[i] = rpeak + np.argmin(seg)
+
+            # --- QRS Onset ---
+            # nfirst = first significant MML before R-peak
+            pre_mml = mml_qrs[mml_qrs < rpeak]
+            if len(pre_mml) > 0:
+                nfirst = pre_mml[0]
+                gamma_pre = 0.06 * qrs_peak_amp
+                search_lim = max(0, nfirst - int(0.12 * target_fs))
+
+                # threshold depends on polarity
+                if w_qrs[nfirst] > 0:
+                    xi_on = 0.05 * w_qrs[nfirst]
+                else:
+                    xi_on = 0.07 * w_qrs[nfirst]
+
+                # check for additional MML before nfirst
+                extra_mml = _find_mml(w_qrs, search_lim, nfirst, gamma_pre)
+                if len(extra_mml) > 0:
+                    nfirst = extra_mml[0]
+                    xi_on = 0.05 * w_qrs[nfirst]
+
+                # search backward for crossing
+                seg = w_qrs[search_lim:nfirst]
+                if len(seg) > 0:
+                    if xi_on > 0:
+                        below = np.where(seg < xi_on)[0]
+                    else:
+                        below = np.where(seg > xi_on)[0]
+                    if len(below) > 0:
+                        qrs_onsets_250[i] = search_lim + below[-1]
+                    else:
+                        qrs_onsets_250[i] = search_lim
+
+            # --- QRS Offset ---
+            post_mml = mml_qrs[mml_qrs > rpeak]
+            if len(post_mml) > 0:
+                nlast = post_mml[-1]
+                gamma_post = 0.09 * qrs_peak_amp
+                search_lim = min(N, nlast + int(0.12 * target_fs))
+
+                if w_qrs[nlast] > 0:
+                    xi_end = 0.125 * w_qrs[nlast]
+                else:
+                    xi_end = 0.71 * w_qrs[nlast]
+
+                extra_mml = _find_mml(w_qrs, nlast + 1, search_lim, gamma_post)
+                if len(extra_mml) > 0:
+                    nlast = extra_mml[-1]
+                    xi_end = 0.125 * w_qrs[nlast]
+
+                seg = w_qrs[nlast:search_lim]
+                if len(seg) > 0:
+                    if xi_end > 0:
+                        below = np.where(seg < xi_end)[0]
+                    else:
+                        below = np.where(seg > xi_end)[0]
+                    if len(below) > 0:
+                        qrs_offsets_250[i] = nlast + below[0]
+                    else:
+                        qrs_offsets_250[i] = min(nlast + int(0.04 * target_fs),
+                                                 N - 1)
+
+        else:
+            # fallback: simple signal-based Q/S detection
+            q_start = max(0, rpeak - int(0.08 * target_fs))
+            seg = sig250[q_start:rpeak]
+            if len(seg) > 0:
+                q_peaks_250[i] = q_start + np.argmin(seg)
+            s_end = min(N, rpeak + int(0.08 * target_fs))
+            seg = sig250[rpeak:s_end]
+            if len(seg) > 1:
+                s_peaks_250[i] = rpeak + np.argmin(seg)
+
+        # Fallback QRS onset/offset if not found
+        if qrs_onsets_250[i] < 0 and q_peaks_250[i] > 0:
+            qrs_onsets_250[i] = max(0, q_peaks_250[i] - int(0.02 * target_fs))
+        if qrs_offsets_250[i] < 0 and s_peaks_250[i] > 0:
+            qrs_offsets_250[i] = min(N - 1,
+                                     s_peaks_250[i] + int(0.02 * target_fs))
+
+        # ==================== T Wave Delineation ====================
+        t_search_start = qrs_offsets_250[i] if qrs_offsets_250[i] > 0 else rpeak + int(0.08 * target_fs)
+        t_search_end = min(N, rpeak + int(min(0.6 * rr_after, 0.42 * target_fs)))
+
+        if t_search_end > t_search_start + 3:
+            # Global and local thresholds for T wave at scale 2^4
+            eps_t = 0.25 * eps[3]
+            local_max = np.max(np.abs(w_pt[t_search_start:t_search_end]))
+            gamma_t = 0.125 * local_max
+            thresh_t = max(eps_t, gamma_t)
+
+            mml_t = _find_mml(w_pt, t_search_start, t_search_end, thresh_t)
+
+            if len(mml_t) >= 2:
+                # Monophasic T: 2 MML with opposite signs
+                # Biphasic T: >= 3 MML
+                # Find first opposite-sign pair
+                nfirst_t = mml_t[0]
+                nlast_t = mml_t[-1]
+
+                if len(mml_t) == 2:
+                    # monophasic T
+                    t_peaks_250[i] = _find_zero_crossing(w_pt, mml_t[0], mml_t[1])
+                elif len(mml_t) >= 3:
+                    # biphasic T: pick the larger peak
+                    zc1 = _find_zero_crossing(w_pt, mml_t[0], mml_t[1])
+                    zc2 = _find_zero_crossing(w_pt, mml_t[1], mml_t[2])
+                    amp1 = abs(sig250[zc1] - np.mean(sig250[t_search_start:t_search_end]))
+                    amp2 = abs(sig250[zc2] - np.mean(sig250[t_search_start:t_search_end]))
+                    t_peaks_250[i] = zc1 if amp1 >= amp2 else zc2
+
+                # T onset
+                if t_peaks_250[i] > 0:
+                    xi_t_on = 0.25 * abs(w_pt[nfirst_t])
+                    search_start = max(t_search_start, nfirst_t - int(0.08 * target_fs))
+                    seg = np.abs(w_pt[search_start:nfirst_t])
+                    if len(seg) > 0:
+                        below = np.where(seg < xi_t_on)[0]
+                        if len(below) > 0:
+                            t_onsets_250[i] = search_start + below[-1]
+
+                    # T offset
+                    xi_t_end = 0.4 * abs(w_pt[nlast_t])
+                    search_end = min(N, nlast_t + int(0.08 * target_fs))
+                    seg = np.abs(w_pt[nlast_t:search_end])
+                    if len(seg) > 0:
+                        below = np.where(seg < xi_t_end)[0]
+                        if len(below) > 0:
+                            t_offsets_250[i] = nlast_t + below[0]
+
+        # ==================== P Wave Delineation ====================
+        p_search_ref = qrs_onsets_250[i] if qrs_onsets_250[i] > 0 else rpeak
+        p_search_end = max(0, p_search_ref - int(0.02 * target_fs))
+        p_search_start = max(0, p_search_ref - int(0.2 * target_fs))
+
+        if p_search_end > p_search_start + 3:
+            # Global and local thresholds for P wave at scale 2^4
+            eps_p = 0.02 * eps[3]
+            local_max = np.max(np.abs(w_pt[p_search_start:p_search_end]))
+            gamma_p = 0.0125 * local_max
+            thresh_p = max(eps_p, gamma_p)
+
+            mml_p = _find_mml(w_pt, p_search_start, p_search_end, thresh_p)
+
+            if len(mml_p) >= 2:
+                nfirst_p = mml_p[0]
+                nlast_p = mml_p[-1]
+
+                if len(mml_p) == 2:
+                    # monophasic P
+                    p_peaks_250[i] = _find_zero_crossing(w_pt, mml_p[0], mml_p[1])
+                elif len(mml_p) >= 3:
+                    # biphasic P
+                    zc1 = _find_zero_crossing(w_pt, mml_p[0], mml_p[1])
+                    zc2 = _find_zero_crossing(w_pt, mml_p[1], mml_p[2])
+                    amp1 = abs(sig250[zc1] - np.mean(sig250[p_search_start:p_search_end]))
+                    amp2 = abs(sig250[zc2] - np.mean(sig250[p_search_start:p_search_end]))
+                    p_peaks_250[i] = zc1 if amp1 >= amp2 else zc2
+
+                # P onset
+                if p_peaks_250[i] > 0:
+                    xi_p_on = 0.5 * abs(w_pt[nfirst_p])
+                    search_start = max(p_search_start, nfirst_p - int(0.04 * target_fs))
+                    seg = np.abs(w_pt[search_start:nfirst_p])
+                    if len(seg) > 0:
+                        below = np.where(seg < xi_p_on)[0]
+                        if len(below) > 0:
+                            p_onsets_250[i] = search_start + below[-1]
+
+                    # P offset
+                    xi_p_end = 0.9 * abs(w_pt[nlast_p])
+                    search_end = min(p_search_end, nlast_p + int(0.04 * target_fs))
+                    seg = np.abs(w_pt[nlast_p:search_end])
+                    if len(seg) > 0:
+                        below = np.where(seg < xi_p_end)[0]
+                        if len(below) > 0:
+                            p_offsets_250[i] = nlast_p + below[0]
+
+    # --- Map indices back to original sampling rate ---
+    def _map_back(arr):
+        result = arr.copy()
+        if scale_factor != 1.0:
+            valid = result >= 0
+            result[valid] = np.round(result[valid] * scale_factor).astype(int)
+            result[valid] = np.clip(result[valid], 0, len(signal) - 1)
+        return result
+
+    p_onsets = _map_back(p_onsets_250)
+    p_peaks_arr = _map_back(p_peaks_250)
+    p_offsets = _map_back(p_offsets_250)
+    qrs_onsets = _map_back(qrs_onsets_250)
+    q_peaks = _map_back(q_peaks_250)
+    s_peaks = _map_back(s_peaks_250)
+    qrs_offsets = _map_back(qrs_offsets_250)
+    t_onsets = _map_back(t_onsets_250)
+    t_peaks_arr = _map_back(t_peaks_250)
+    t_offsets = _map_back(t_offsets_250)
+
+    # --- Compute derived intervals ---
     n_beats = len(rpeaks)
-    p_onsets = np.full(n_beats, -1, dtype=int)
-    p_peaks_arr = np.full(n_beats, -1, dtype=int)
-    p_offsets = np.full(n_beats, -1, dtype=int)
-    qrs_onsets = np.full(n_beats, -1, dtype=int)
-    q_peaks = np.full(n_beats, -1, dtype=int)
-    s_peaks = np.full(n_beats, -1, dtype=int)
-    qrs_offsets = np.full(n_beats, -1, dtype=int)
-    t_onsets = np.full(n_beats, -1, dtype=int)
-    t_peaks_arr = np.full(n_beats, -1, dtype=int)
-    t_offsets = np.full(n_beats, -1, dtype=int)
-
-    for i, rpeak in enumerate(rpeaks):
-        rr_before = (rpeaks[i] - rpeaks[i - 1]) if i > 0 else int(0.8 * sampling_rate)
-        rr_after = (rpeaks[i + 1] - rpeaks[i]) if i < n_beats - 1 else int(0.8 * sampling_rate)
-
-        # --- QRS delineation ---
-        # Q peak: minimum in signal within 80ms before R-peak
-        q_start = max(0, rpeak - int(0.08 * sampling_rate))
-        q_segment = signal[q_start:rpeak]
-        if len(q_segment) > 0:
-            q_peaks[i] = q_start + np.argmin(q_segment)
-
-        # S peak: minimum in signal within 80ms after R-peak
-        s_end = min(len(signal), rpeak + int(0.08 * sampling_rate))
-        s_segment = signal[rpeak:s_end]
-        if len(s_segment) > 1:
-            s_peaks[i] = rpeak + np.argmin(s_segment)
-
-        # QRS onset: steepest descent before Q using wavelet detail
-        qrs_on_start = max(0, rpeak - int(0.12 * sampling_rate))
-        if q_peaks[i] > 0:
-            d2_segment = np.abs(d2[qrs_on_start:q_peaks[i]])
-            if len(d2_segment) > 0:
-                # find where wavelet detail drops below threshold
-                thr_qrs = 0.1 * np.max(d2_segment)
-                below = np.where(d2_segment < thr_qrs)[0]
-                if len(below) > 0:
-                    qrs_onsets[i] = qrs_on_start + below[-1]
-                else:
-                    qrs_onsets[i] = qrs_on_start
-
-        # QRS offset: after S peak, where wavelet detail drops
-        if s_peaks[i] > 0:
-            qrs_off_end = min(len(signal), rpeak + int(0.15 * sampling_rate))
-            d2_segment = np.abs(d2[s_peaks[i]:qrs_off_end])
-            if len(d2_segment) > 0:
-                thr_qrs = 0.1 * np.max(np.abs(d2[q_peaks[i]:s_peaks[i]+1])) if q_peaks[i] > 0 else 0.1 * np.max(d2_segment)
-                below = np.where(d2_segment < thr_qrs)[0]
-                if len(below) > 0:
-                    qrs_offsets[i] = s_peaks[i] + below[0]
-                else:
-                    qrs_offsets[i] = min(s_peaks[i] + int(0.04 * sampling_rate),
-                                         len(signal) - 1)
-
-        # --- T wave delineation ---
-        # Search window: 80ms to 60% of RR after QRS offset
-        t_search_start = qrs_offsets[i] if qrs_offsets[i] > 0 else rpeak + int(0.08 * sampling_rate)
-        t_search_end = min(len(signal), rpeak + int(0.6 * rr_after))
-
-        if t_search_end > t_search_start + 5:
-            t_segment = signal[t_search_start:t_search_end]
-            # T-peak: maximum (or minimum for inverted T) in search window
-            t_max_idx = np.argmax(np.abs(t_segment - np.mean(t_segment)))
-            t_peaks_arr[i] = t_search_start + t_max_idx
-
-            # T onset: use wavelet detail to find start of T wave
-            d4_t = d4[t_search_start:t_peaks_arr[i]]
-            if len(d4_t) > 2:
-                thr_t = 0.15 * np.max(np.abs(d4_t))
-                above = np.where(np.abs(d4_t) > thr_t)[0]
-                if len(above) > 0:
-                    t_onsets[i] = t_search_start + above[0]
-
-            # T offset: use wavelet detail to find end of T wave
-            d4_t2 = d4[t_peaks_arr[i]:t_search_end]
-            if len(d4_t2) > 2:
-                thr_t = 0.15 * np.max(np.abs(d4_t2))
-                below = np.where(np.abs(d4_t2) < thr_t)[0]
-                if len(below) > 0:
-                    t_offsets[i] = t_peaks_arr[i] + below[0]
-
-        # --- P wave delineation ---
-        # Search window: 200ms to 50ms before QRS onset (or R-peak)
-        p_search_ref = qrs_onsets[i] if qrs_onsets[i] > 0 else rpeak
-        p_search_start = max(0, p_search_ref - int(0.2 * sampling_rate))
-        p_search_end = max(0, p_search_ref - int(0.02 * sampling_rate))
-
-        if p_search_end > p_search_start + 5:
-            p_segment = signal[p_search_start:p_search_end]
-            # P-peak: maximum in search window
-            p_peaks_arr[i] = p_search_start + np.argmax(p_segment)
-
-            # P onset
-            d4_p = d4[p_search_start:p_peaks_arr[i]]
-            if len(d4_p) > 2:
-                thr_p = 0.15 * np.max(np.abs(d4_p))
-                above = np.where(np.abs(d4_p) > thr_p)[0]
-                if len(above) > 0:
-                    p_onsets[i] = p_search_start + above[0]
-
-            # P offset
-            d4_p2 = d4[p_peaks_arr[i]:p_search_end]
-            if len(d4_p2) > 2:
-                thr_p = 0.15 * np.max(np.abs(d4_p2))
-                below = np.where(np.abs(d4_p2) < thr_p)[0]
-                if len(below) > 0:
-                    p_offsets[i] = p_peaks_arr[i] + below[0]
-
-    # compute derived intervals
     qrs_durations = np.full(n_beats, np.nan)
     qt_intervals = np.full(n_beats, np.nan)
     qtc_bazett = np.full(n_beats, np.nan)
     pr_intervals = np.full(n_beats, np.nan)
 
     for i in range(n_beats):
-        # QRS duration
         if qrs_onsets[i] > 0 and qrs_offsets[i] > 0:
             qrs_durations[i] = (qrs_offsets[i] - qrs_onsets[i]) / sampling_rate * 1000.0
 
-        # QT interval (QRS onset to T offset)
         if qrs_onsets[i] > 0 and t_offsets[i] > 0:
             qt_intervals[i] = (t_offsets[i] - qrs_onsets[i]) / sampling_rate * 1000.0
 
-            # QTc (Bazett): QT / sqrt(RR)
             if i < n_beats - 1:
                 rr_sec = (rpeaks[i + 1] - rpeaks[i]) / sampling_rate
             elif i > 0:
@@ -2470,7 +2670,6 @@ def ecg_wavelet_delineation(signal=None, rpeaks=None, sampling_rate=1000.0):
             if rr_sec > 0:
                 qtc_bazett[i] = qt_intervals[i] / np.sqrt(rr_sec)
 
-        # PR interval (P onset to QRS onset)
         if p_onsets[i] > 0 and qrs_onsets[i] > 0:
             pr_intervals[i] = (qrs_onsets[i] - p_onsets[i]) / sampling_rate * 1000.0
 
