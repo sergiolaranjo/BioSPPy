@@ -461,7 +461,10 @@ def ppg_segmentation(signal=None,
     onsets = []
     minima = (np.diff(np.sign(np.diff(signal))) > 0).nonzero()[0]
     for ind in peaks:
-        onsets.append(minima[minima < ind].max())
+        candidates = minima[minima < ind]
+        if len(candidates) == 0:
+            continue
+        onsets.append(candidates.max())
     onsets = np.array(onsets, dtype='int')
 
     # raise error if onset detection failed

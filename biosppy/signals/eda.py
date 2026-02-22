@@ -194,10 +194,9 @@ def eda_events(signal=None, sampling_rate=1000., method="emotiphai", **kwargs):
         raise ValueError("Could not find SCR pulses.")
 
     # compute phasic rate
-    try:
+    if len(peaks) > 1:
         phasic_rate = sampling_rate * (60. / np.diff(peaks))
-    except Exception as e:
-        print(e)
+    else:
         phasic_rate = None
 
     # compute rise times

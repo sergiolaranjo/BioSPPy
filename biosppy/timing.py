@@ -88,7 +88,7 @@ def clear(name=None):
     if name is None:
         name = DFC
     
-    CLOCKS.pop(name)
+    CLOCKS.pop(name, None)
 
 
 def clear_all():

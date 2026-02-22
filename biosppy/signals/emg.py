@@ -196,7 +196,7 @@ def hodges_bui_onset_detector(signal=None, rest=None, sampling_rate=1000.,
         raise TypeError("Please specify an input signal.")
 
     if rest is None:
-        raise TypeError("Please specidy rest parameters.")
+        raise TypeError("Please specify rest parameters.")
 
     if size is None:
         raise TypeError("Please specify the detection window size.")
@@ -310,7 +310,7 @@ def bonato_onset_detector(signal=None, rest=None, sampling_rate=1000.,
         raise TypeError("Please specify an input signal.")
 
     if rest is None:
-        raise TypeError("Please specidy rest parameters.")
+        raise TypeError("Please specify rest parameters.")
 
     if threshold is None:
         raise TypeError("Please specify the detection threshold.")
@@ -483,7 +483,7 @@ def lidierth_onset_detector(signal=None, rest=None, sampling_rate=1000.,
         raise TypeError("Please specify an input signal.")
 
     if rest is None:
-        raise TypeError("Please specidy rest parameters.")
+        raise TypeError("Please specify rest parameters.")
 
     if size is None:
         raise TypeError("Please specify the detection window size.")
@@ -652,7 +652,7 @@ def abbink_onset_detector(signal=None, rest=None, sampling_rate=1000.,
         raise TypeError("Please specify an input signal.")
 
     if rest is None:
-        raise TypeError("Please specidy rest parameters.")
+        raise TypeError("Please specify rest parameters.")
 
     if size is None:
         raise TypeError("Please specify the detection window size.")
@@ -814,7 +814,7 @@ def solnik_onset_detector(signal=None, rest=None, sampling_rate=1000.,
         raise TypeError("Please specify an input signal.")
 
     if rest is None:
-        raise TypeError("Please specidy rest parameters.")
+        raise TypeError("Please specify rest parameters.")
 
     if threshold is None:
         raise TypeError("Please specify the scale factor for calculating the "
@@ -1042,7 +1042,7 @@ def londral_onset_detector(signal=None, rest=None, sampling_rate=1000.,
         raise TypeError("Please specify an input signal.")
 
     if rest is None:
-        raise TypeError("Please specidy rest parameters.")
+        raise TypeError("Please specify rest parameters.")
 
     if size is None:
         raise TypeError("Please specify the detection window size.")

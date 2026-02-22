@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-biosppy.inter_plotting.ecg
+biosppy.inter_plotting.acc
 -------------------
 
 This module provides an interactive display option for the ACC plot.
@@ -196,7 +196,7 @@ def plot_acc(ts=None, raw=None, vm=None, sm=None, spectrum=None, path=None):
         path = utils.normpath(path)
         root_, ext = os.path.splitext(path)
         ext = ext.lower()
-        if ext not in ["png", "jpg"]:
+        if ext not in [".png", ".jpg"]:
             path = root_ + ".png"
 
         fig.savefig(path, dpi=200, bbox_inches="tight")
@@ -216,6 +216,11 @@ def plot_acc(ts=None, raw=None, vm=None, sm=None, spectrum=None, path=None):
     show_features_var = IntVar()
     share_axes_var = IntVar()
 
+    # initialize globals used by show_features
+    global feat_fig, toolbarfeat
+    feat_fig = None
+    toolbarfeat = None
+
     def show_features():
         global feat_fig
         global toolbarfeat
@@ -225,7 +230,8 @@ def plot_acc(ts=None, raw=None, vm=None, sm=None, spectrum=None, path=None):
             domain_feat_btn.config(state="disabled")
 
             # remove canvas for plotting
-            feat_fig.dump_canvas(root)
+            if feat_fig is not None:
+                feat_fig.dump_canvas(root)
 
         if show_features_var.get() == 1:
             # enable option menu for feature selection

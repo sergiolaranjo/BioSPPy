@@ -184,15 +184,14 @@ def _plot_filter(b, a, sampling_rate=1000., nfreqs=4096, log_xscale=True,
         fig = plt.figure(figsize=(8, 4))
         ax = fig.add_subplot(211)
         ax2 = fig.add_subplot(212)
+        # set layout
+        fig.subplots_adjust(top=0.88, bottom=0.17, hspace=0.2, left=0.16,
+                            right=0.94)
+        # title
+        fig.suptitle('Filter Frequency Response', fontsize=12, fontweight='bold')
     else:
+        fig = ax.figure
         ax2 = ax.twinx()
-
-    # set layout
-    fig.subplots_adjust(top=0.88, bottom=0.17, hspace=0.2, left=0.16,
-                        right=0.94)
-
-    # title
-    fig.suptitle('Filter Frequency Response', fontsize=12, fontweight='bold')
 
     # amplitude
     pwr = 20. * np.log10(np.abs(resp))
@@ -289,7 +288,7 @@ def plot_filter(ftype='FIR',
         path = utils.normpath(path)
         root, ext = os.path.splitext(path)
         ext = ext.lower()
-        if ext not in ['png', 'jpg']:
+        if ext not in ['.png', '.jpg']:
             path = root + '.png'
 
         fig.savefig(path, dpi=200, bbox_inches='tight')
@@ -342,7 +341,7 @@ def plot_spectrum(signal=None, sampling_rate=1000., path=None, show=True):
         path = utils.normpath(path)
         root, ext = os.path.splitext(path)
         ext = ext.lower()
-        if ext not in ['png', 'jpg']:
+        if ext not in ['.png', '.jpg']:
             path = root + '.png'
 
         fig.savefig(path, dpi=200, bbox_inches='tight')
@@ -464,7 +463,7 @@ def plot_acc(ts=None,
         path = utils.normpath(path)
         root, ext = os.path.splitext(path)
         ext = ext.lower()
-        if ext not in ['png', 'jpg']:
+        if ext not in ['.png', '.jpg']:
             path = root + '.png'
 
         fig.savefig(path, dpi=200, bbox_inches='tight')
@@ -592,7 +591,7 @@ def plot_ppg(ts=None,
         path = utils.normpath(path)
         root, ext = os.path.splitext(path)
         ext = ext.lower()
-        if ext not in ['png', 'jpg']:
+        if ext not in ['.png', '.jpg']:
             path = root + '.png'
 
         fig.savefig(path, dpi=200, bbox_inches='tight')
@@ -687,7 +686,7 @@ def plot_bvp(ts=None,
         path = utils.normpath(path)
         root, ext = os.path.splitext(path)
         ext = ext.lower()
-        if ext not in ['png', 'jpg']:
+        if ext not in ['.png', '.jpg']:
             path = root + '.png'
 
         fig.savefig(path, dpi=200, bbox_inches='tight')
@@ -782,7 +781,7 @@ def plot_abp(ts=None,
         path = utils.normpath(path)
         root, ext = os.path.splitext(path)
         ext = ext.lower()
-        if ext not in ['png', 'jpg']:
+        if ext not in ['.png', '.jpg']:
             path = root + '.png'
 
         fig.savefig(path, dpi=200, bbox_inches='tight')
@@ -928,7 +927,7 @@ def plot_eda(ts=None,
         path = utils.normpath(path)
         root, ext = os.path.splitext(path)
         ext = ext.lower()
-        if ext not in ['png', 'jpg']:
+        if ext not in ['.png', '.jpg']:
             path = root + '.png'
 
         fig.savefig(path, dpi=200, bbox_inches='tight')
@@ -1045,7 +1044,7 @@ def plot_emg(ts=None,
         path = utils.normpath(path)
         root, ext = os.path.splitext(path)
         ext = ext.lower()
-        if ext not in ['png', 'jpg']:
+        if ext not in ['.png', '.jpg']:
             path = root + '.png'
 
         fig.savefig(path, dpi=200, bbox_inches='tight')
@@ -1157,7 +1156,7 @@ def plot_resp(ts=None,
         path = utils.normpath(path)
         root, ext = os.path.splitext(path)
         ext = ext.lower()
-        if ext not in ['png', 'jpg']:
+        if ext not in ['.png', '.jpg']:
             path = root + '.png'
 
         fig.savefig(path, dpi=200, bbox_inches='tight')
@@ -1288,7 +1287,7 @@ def plot_eeg(ts=None,
         path = utils.normpath(path)
         root, ext = os.path.splitext(path)
         ext = ext.lower()
-        if ext not in ['png', 'jpg']:
+        if ext not in ['.png', '.jpg']:
             ext = '.png'
 
         for n, fig in figs:
@@ -1566,7 +1565,7 @@ def plot_ecg(ts=None,
         path = utils.normpath(path)
         root, ext = os.path.splitext(path)
         ext = ext.lower()
-        if ext not in ['png', 'jpg']:
+        if ext not in ['.png', '.jpg']:
             path = root + '.png'
 
         fig.savefig(path, dpi=200, bbox_inches='tight')
@@ -1678,7 +1677,7 @@ def plot_bcg(ts=None,
         path = utils.normpath(path)
         root, ext = os.path.splitext(path)
         ext = ext.lower()
-        if ext not in ['png', 'jpg']:
+        if ext not in ['.png', '.jpg']:
             path = root + '.png'
 
         fig.savefig(path, dpi=200, bbox_inches='tight')
@@ -1808,7 +1807,7 @@ def plot_pcg(ts=None,
         path = utils.normpath(path)
         root, ext = os.path.splitext(path)
         ext = ext.lower()
-        if ext not in ['png', 'jpg']:
+        if ext not in ['.png', '.jpg']:
             path = root + '.png'
 
         fig.savefig(path, dpi=200, bbox_inches='tight')
@@ -1975,7 +1974,7 @@ def plot_biometrics(assessment=None, eer_idx=None, path=None, show=False):
         path = utils.normpath(path)
         root, ext = os.path.splitext(path)
         ext = ext.lower()
-        if ext not in ['png', 'jpg']:
+        if ext not in ['.png', '.jpg']:
             path = root + '.png'
 
         fig.savefig(path, dpi=200, bbox_inches='tight')
@@ -2070,7 +2069,7 @@ def plot_clustering(data=None, clusters=None, path=None, show=False):
         path = utils.normpath(path)
         root, ext = os.path.splitext(path)
         ext = ext.lower()
-        if ext not in ['png', 'jpg']:
+        if ext not in ['.png', '.jpg']:
             path = root + '.png'
 
         fig.savefig(path, dpi=200, bbox_inches='tight')

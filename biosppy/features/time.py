@@ -11,6 +11,7 @@ This module provides methods to extract time features.
 
 # Imports
 # 3rd party
+import warnings
 import numpy as np
 
 # local
@@ -170,24 +171,24 @@ def hjorth_features(signal=None):
     signal_mobility = _hjorth_mobility(signal)
     feats = feats.append(signal_mobility, 'hjorth_mobility')
     if signal_mobility is None:
-        print("Hjorth mobility is undefined. Returning None.")
+        warnings.warn("Hjorth mobility is undefined. Returning None.")
 
     # hjorth complexity
     signal_complexity = _hjorth_complexity(signal)
     feats = feats.append(signal_complexity, 'hjorth_complexity')
     if signal_complexity is None:
-        print("Hjorth complexity is undefined. Returning None.")
+        warnings.warn("Hjorth complexity is undefined. Returning None.")
 
     # hjorth chaos
     signal_chaos = _hjorth_chaos(signal)
     feats = feats.append(signal_chaos, 'hjorth_chaos')
     if signal_chaos is None:
-        print("Hjorth chaos is undefined. Returning None.")
+        warnings.warn("Hjorth chaos is undefined. Returning None.")
 
     # hjorth hazard
     signal_hazard = _hjorth_hazard(signal)
     feats = feats.append(signal_hazard, 'hjorth_hazard')
     if signal_hazard is None:
-        print("Hjorth hazard is undefined. Returning None.")
+        warnings.warn("Hjorth hazard is undefined. Returning None.")
 
     return feats

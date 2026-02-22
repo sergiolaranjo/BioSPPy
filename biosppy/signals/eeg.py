@@ -267,6 +267,9 @@ def get_power_features(signal=None, sampling_rate=1000.0, size=0.25, overlap=0.5
 
     sampling_rate = float(sampling_rate)
 
+    if overlap >= 1.0:
+        raise ValueError("Overlap must be less than 1.0 (got {}).".format(overlap))
+
     # convert sizes to samples
     size = int(size * sampling_rate)
     step = size - int(overlap * size)
@@ -356,6 +359,9 @@ def get_plf_features(signal=None, sampling_rate=1000.0, size=0.25, overlap=0.5):
     nch = signal.shape[1]
 
     sampling_rate = float(sampling_rate)
+
+    if overlap >= 1.0:
+        raise ValueError("Overlap must be less than 1.0 (got {}).".format(overlap))
 
     # convert sizes to samples
     size = int(size * sampling_rate)

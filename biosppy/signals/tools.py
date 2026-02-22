@@ -1142,7 +1142,7 @@ def find_extrema(signal=None, mode="both"):
         raise TypeError("Please specify an input signal.")
 
     if mode not in ["max", "min", "both"]:
-        raise ValueError("Unknwon mode %r." % mode)
+        raise ValueError("Unknown mode %r." % mode)
 
     aux = np.diff(np.sign(np.diff(signal)))
 
@@ -1687,7 +1687,7 @@ def finite_difference(signal=None, weights=None):
     D2 = D // 2
 
     index = np.arange(D2, len(signal) - D2, dtype="int")
-    derivative = derivative[D:]
+    derivative = derivative[2 * D2:]
 
     return utils.ReturnTuple((index, derivative), ("index", "derivative"))
 
@@ -1748,7 +1748,7 @@ def _init_dist_profile(m, n, signal):
     return X, sigma
 
 
-def _ditance_profile(m, n, query, X, sigma):
+def _distance_profile(m, n, query, X, sigma):
     """Compute the distance profile of a query sequence against a signal.
 
     Implements the algorithm described in [Mueen2014]_, using the notation
@@ -1860,7 +1860,7 @@ def distance_profile(query=None, signal=None, metric="euclidean"):
     X, sigma = _init_dist_profile(m, n, signal)
 
     # compute distance profile
-    dist = _ditance_profile(m, n, query, X, sigma)
+    dist = _distance_profile(m, n, query, X, sigma)
 
     if metric == "pearson":
         dist = 1 - np.abs(dist) / (2 * m)
@@ -1960,7 +1960,7 @@ def signal_self_join(signal=None, size=None, index=None, limit=None):
     for idx in index:
         # compute distance profile
         query = signal[idx : idx + size]
-        dist = _ditance_profile(size, n, query, X, sigma)
+        dist = _distance_profile(size, n, query, X, sigma)
         dist = np.abs(np.sqrt(dist))  # to have euclidean distance
 
         # apply exlusion zone
@@ -2089,7 +2089,7 @@ def signal_cross_join(signal1=None, signal2=None, size=None, index=None, limit=N
     for idx in index:
         # compute distance profile
         query = signal2[idx : idx + size]
-        dist = _ditance_profile(size, n1, query, X, sigma)
+        dist = _distance_profile(size, n1, query, X, sigma)
         dist = np.abs(np.sqrt(dist))  # to have euclidean distance
 
         # find nearest neighbor

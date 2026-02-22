@@ -24,7 +24,7 @@ import scipy.signal as ss
 import matplotlib.pyplot as plt
 from scipy import stats, integrate, interpolate
 import peakutils
-from scipy.ndimage import filters
+from scipy.ndimage import percentile_filter
 
 
 # local
@@ -289,7 +289,7 @@ def _extract_heartbeats(signal=None, rpeaks=None, before=200, after=400):
             continue
         b = r + after
         if b > length:
-            break
+            continue
         templates.append(signal[a:b])
         newR.append(r)
 
@@ -315,7 +315,7 @@ def extract_heartbeats(
         Sampling frequency (Hz).
     before : float, optional
         Window size to include before the R peak (seconds).
-    after : int, optional
+    after : float, optional
         Window size to include after the R peak (seconds).
 
     Returns
@@ -514,9 +514,9 @@ def compare_segmentation(
         tIBIs = np.std(tIBI, ddof=1)
 
     # output
-    perf = float(TP) / len(reference)
-    acc = float(TP) / (TP + FP)
-    err = float(FP) / (TP + FP)
+    perf = float(TP) / len(reference) if len(reference) > 0 else 0.0
+    acc = float(TP) / (TP + FP) if (TP + FP) > 0 else 0.0
+    err = float(FP) / (TP + FP) if (TP + FP) > 0 else 0.0
 
     args = (
         TP,
@@ -991,7 +991,7 @@ def engzee_segmenter(signal=None, sampling_rate=1000.0, threshold=0.48):
         windowW = np.arange(nthfplus, nthfplus + v180ms)
         # Check if the condition y2[n] < Th holds for a specified
         # number of consecutive points (experimentally we found this number to be at least 10 points)"
-        i, f = windowW[0], windowW[-1] if windowW[-1] < len(y2) else -1
+        i, f = windowW[0], windowW[-1] if windowW[-1] < len(y2) else len(y2)
         hold_points = np.diff(np.nonzero(y2[i:f] < ThNew)[0])
         cont = 0
         for hp in hold_points:
@@ -1046,8 +1046,10 @@ def gamboa_segmenter(signal=None, sampling_rate=1000.0, tol=0.002):
     TH = 0.01
     F = np.cumsum(hist)
 
-    v0 = edges[np.nonzero(F > TH)[0][0]]
-    v1 = edges[np.nonzero(F < (1 - TH))[0][-1]]
+    idx_above = np.nonzero(F > TH)[0]
+    idx_below = np.nonzero(F < (1 - TH))[0]
+    v0 = edges[idx_above[0]] if len(idx_above) > 0 else edges[0]
+    v1 = edges[idx_below[-1]] if len(idx_below) > 0 else edges[-1]
 
     nrm = max([abs(v0), abs(v1)])
     norm_signal = signal / float(nrm)
@@ -1522,8 +1524,8 @@ def Pan_Tompkins_Plus_Plus_segmenter(signal=None, sampling_rate=1000.0):
 
         Wn = 5 * 2 / sampling_rate
         N = 3  # Order of 3 less processing
-        a, b = signal.butter(N, Wn, btype="highpass")  # Bandpass filtering
-        ecg_h = signal.filtfilt(a, b, ecg_l, padlen=3 * (max(len(a), len(b)) - 1))
+        a, b = ss.butter(N, Wn, btype="highpass")  # Bandpass filtering
+        ecg_h = ss.filtfilt(a, b, ecg_l, padlen=3 * (max(len(a), len(b)) - 1))
         ecg_h = ecg_h / np.max(
             np.abs(ecg_h)
         )  # Normalize by dividing high value. This reduces time of calculation
@@ -2112,8 +2114,8 @@ def estimate_th(x, alpha, ww):
 
     x_abs = np.abs(x)
 
-    q1 = filters.percentile_filter(x_abs, 25, size=ww, mode="reflect")
-    q3 = filters.percentile_filter(x_abs, 75, size=ww, mode="reflect")
+    q1 = percentile_filter(x_abs, 25, size=ww, mode="reflect")
+    q3 = percentile_filter(x_abs, 75, size=ww, mode="reflect")
 
     th = alpha * ((q3 - q1) / 2)
 
@@ -3020,6 +3022,9 @@ def fSQI(
         dem_power = power_in_range([0, float(fs / 2.0)], f, Pxx_den)
     else:
         dem_power = power_in_range(dem_spectrum, f, Pxx_den)
+
+    if dem_power == 0:
+        return 0.0
 
     if mode == "simple":
         return num_power / dem_power

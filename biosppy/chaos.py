@@ -877,8 +877,12 @@ def hurst_exponent(signal=None, min_win=10, max_win=None, n_wins=20):
 
     rs_values = np.array(rs_values)
 
+    if len(rs_values) < 2:
+        raise ValueError("Not enough valid R/S values to compute Hurst exponent.")
+
     # Hurst exponent (slope of log(R/S) vs log(n))
-    coeffs = np.polyfit(np.log(window_sizes[:len(rs_values)]), np.log(rs_values), 1)
+    valid_sizes = window_sizes[:len(rs_values)]
+    coeffs = np.polyfit(np.log(valid_sizes), np.log(rs_values), 1)
     H = coeffs[0]
 
     return utils.ReturnTuple((H, rs_values, window_sizes[:len(rs_values)]),

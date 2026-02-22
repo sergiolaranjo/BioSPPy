@@ -47,7 +47,7 @@ def serialize(data, path, compress=3):
     """
 
     # normalize path
-    utils.normpath(path)
+    path = utils.normpath(path)
 
     joblib.dump(data, path, compress=compress)
 
@@ -561,7 +561,7 @@ def load_edf(path):
                         signals[i].append(struct.unpack('<h', f.read(2))[0])
 
         # Scale the signals into physical units
-        for i in range(num_signals-1):
+        for i in range(num_signals):
             signals[i] = np.array(signals[i])
             signals[i] = (signals[i] - digital_min[i]) / (digital_max[i] - digital_min[i]) * (physical_max[i] - physical_min[i]) + physical_min[i]
 

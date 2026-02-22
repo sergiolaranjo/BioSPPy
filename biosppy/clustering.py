@@ -329,7 +329,7 @@ def consensus_kmeans(data=None,
 
     # initialization grid
     grid = {
-        'k': np.random.random_integers(low=kmin, high=kmax, size=nensemble)
+        'k': np.random.randint(low=kmin, high=kmax + 1, size=nensemble)
     }
 
     # run consensus
@@ -549,8 +549,8 @@ def mdist_templates(data=None,
     ks = list(clusters)
 
     # remove the outliers' cluster, if present
-    if '-1' in ks:
-        ks.remove('-1')
+    if -1 in ks:
+        ks.remove(-1)
 
     cardinals = [len(clusters[k]) for k in ks]
 
@@ -641,8 +641,8 @@ def centroid_templates(data=None, clusters=None, ntemplates=1):
     ks = list(clusters)
 
     # remove the outliers' cluster, if present
-    if '-1' in ks:
-        ks.remove('-1')
+    if -1 in ks:
+        ks.remove(-1)
 
     cardinals = [len(clusters[k]) for k in ks]
 

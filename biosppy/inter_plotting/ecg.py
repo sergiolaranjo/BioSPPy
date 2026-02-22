@@ -147,7 +147,7 @@ def plot_ecg(
             path = utils.normpath(path)
             root, ext = os.path.splitext(path)
             ext = ext.lower()
-            if ext not in ["png", "jpg"]:
+            if ext not in [".png", ".jpg"]:
                 path_block_1 = "{}-summary{}".format(root, ".png")
                 path_block_2 = "{}-templates{}".format(root, ".png")
             else:

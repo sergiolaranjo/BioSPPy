@@ -45,9 +45,9 @@ def pcosine(u, v):
 
     """
 
-    # validate vectors like scipy does
-    u = ssd._validate_vector(u)
-    v = ssd._validate_vector(v)
+    # validate vectors
+    u = np.asarray(u, dtype=float).squeeze()
+    v = np.asarray(v, dtype=float).squeeze()
 
     dist = 1. - np.abs(np.dot(u, v) / (linalg.norm(u) * linalg.norm(v)))
 

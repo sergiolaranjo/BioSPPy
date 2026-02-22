@@ -411,23 +411,31 @@ def ecg_based_segmentation(pcg_signal=None, ecg_signal=None, sampling_rate=1000.
         states[int(np.ceil(S2_index +((mean_S2 +(0*std_S2))/2))-1):end_pos] = 4
     
     # Set first and last sections of the signal (before first R-peak, and after last end T-wave)
-    first_location_of_definite_state = np.argwhere(states!=0)[0][0]
+    definite_states = np.argwhere(states != 0)
+    if len(definite_states) == 0:
+        states[:] = 2
+        if show:
+            fig, ax = plt.subplots(figsize=(15, 4))
+            t = np.linspace(0, round(len(pcg_signal)/sampling_rate), len(pcg_signal))
+        return states
+
+    first_location_of_definite_state = definite_states[0][0]
 
     if first_location_of_definite_state > 0:
         if states[first_location_of_definite_state] == 1:
             states[0:first_location_of_definite_state] = 4
-        
+
         if states[first_location_of_definite_state] == 3:
-            states[0:first_location_of_definite_state+1] = 2    
-    
-    last_location_of_definite_state = np.argwhere(states!=0)[-1][0]
+            states[0:first_location_of_definite_state+1] = 2
+
+    last_location_of_definite_state = definite_states[-1][0]
     
     if last_location_of_definite_state > 0:
         
         if states[last_location_of_definite_state] == 1:
             states[last_location_of_definite_state:] = 2
-        
-        if states[last_location_of_definite_state] == 1:
+
+        if states[last_location_of_definite_state] == 3:
             states[last_location_of_definite_state:] = 4
     
     # Set everywhere else as state 2:        
