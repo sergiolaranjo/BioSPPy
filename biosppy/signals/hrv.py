@@ -1853,10 +1853,11 @@ def hrv_fragmentation(rri=None):
         IALS - Inverse of the Average Length of Acceleration/Deceleration
         Segments. Higher values indicate more fragmented heart rate.
     pss : float
-        PSS - Percentage of Short Segments (length <= 3 intervals).
+        PSS - Percentage of Short Segments (length < 3 intervals).
     pas : float
-        PAS - Percentage of Alternating Segments. Segments of length 1
-        where the sign alternates.
+        PAS - Percentage of Alternating Segments. Percentage of segments
+        that are part of alternation patterns (>= 4 consecutive
+        sign-alternating increments).
 
     References
     ----------
@@ -1895,32 +1896,65 @@ def hrv_fragmentation(rri=None):
     n_inflections = np.sum(sign_changes != 0)
     pip = 100.0 * n_inflections / (len(signs) - 1)
 
-    # Segment analysis: identify runs of same-sign differences
-    # A segment is a consecutive run of differences with the same sign
+    # Segment analysis: identify runs of same non-zero sign differences
+    # A segment is a consecutive run of differences with the same non-zero sign
+    # Zero-sign differences break segments but are not counted as segments
     segments = []
-    current_len = 1
+    current_len = 0
+    current_sign = 0
 
-    for i in range(1, len(signs)):
-        if signs[i] == signs[i - 1] and signs[i] != 0:
+    for s in signs:
+        if s != 0 and s == current_sign:
             current_len += 1
         else:
-            segments.append(current_len)
-            current_len = 1
-    segments.append(current_len)  # last segment
+            if current_len > 0:
+                segments.append(current_len)
+            if s != 0:
+                current_sign = s
+                current_len = 1
+            else:
+                current_sign = 0
+                current_len = 0
+    if current_len > 0:
+        segments.append(current_len)
 
     segments = np.array(segments)
 
     # IALS: Inverse of Average Length of Acceleration/Deceleration Segments
-    avg_len = np.mean(segments)
-    ials = 1.0 / avg_len if avg_len > 0 else np.inf
+    if len(segments) > 0:
+        avg_len = np.mean(segments)
+        ials = 1.0 / avg_len if avg_len > 0 else np.inf
+    else:
+        ials = np.inf
 
-    # PSS: Percentage of Short Segments (length <= 3)
-    n_short = np.sum(segments <= 3)
-    pss = 100.0 * n_short / len(segments) if len(segments) > 0 else 0.0
+    # PSS: Percentage of Short Segments (length < 3, per Costa 2017)
+    if len(segments) > 0:
+        n_short = np.sum(segments < 3)
+        pss = 100.0 * n_short / len(segments)
+    else:
+        pss = 0.0
 
-    # PAS: Percentage of Alternating Segments (length == 1)
-    n_alternating = np.sum(segments == 1)
-    pas = 100.0 * n_alternating / len(segments) if len(segments) > 0 else 0.0
+    # PAS: Percentage of Alternating Segments
+    # Costa 2017: an alternation pattern requires >= 4 consecutive
+    # sign-alternating increments (i.e., runs of consecutive segments
+    # each of length 1). We count runs of >= 4 consecutive length-1 segments.
+    n_alternating = 0
+    n_total_segments = len(segments)
+    if n_total_segments > 0:
+        consec_ones = 0
+        for seg_len in segments:
+            if seg_len == 1:
+                consec_ones += 1
+            else:
+                if consec_ones >= 4:
+                    n_alternating += consec_ones
+                consec_ones = 0
+        # handle trailing run
+        if consec_ones >= 4:
+            n_alternating += consec_ones
+        pas = 100.0 * n_alternating / n_total_segments
+    else:
+        pas = 0.0
 
     # output
     out = utils.ReturnTuple(
@@ -1931,7 +1965,7 @@ def hrv_fragmentation(rri=None):
     return out
 
 
-def dfa_alpha(rri=None, short_range=(4, 16), long_range=(16, 64), n_wins=20):
+def dfa_alpha(rri=None, short_range=(4, 16), long_range=(17, 64), n_wins=20):
     """Compute DFA alpha1 and alpha2 scaling exponents from RR intervals.
 
     DFA alpha1 (short-term) and alpha2 (long-term) are among the most
@@ -1946,7 +1980,7 @@ def dfa_alpha(rri=None, short_range=(4, 16), long_range=(16, 64), n_wins=20):
     short_range : tuple, optional
         Window size range for alpha1 (min, max). Default: (4, 16).
     long_range : tuple, optional
-        Window size range for alpha2 (min, max). Default: (16, 64).
+        Window size range for alpha2 (min, max). Default: (17, 64).
     n_wins : int, optional
         Number of window sizes per range. Default: 20.
 
@@ -1985,9 +2019,6 @@ def dfa_alpha(rri=None, short_range=(4, 16), long_range=(16, 64), n_wins=20):
             f"Need at least {long_range[1]} RR intervals for DFA alpha2. "
             f"Got {len(rri)}."
         )
-
-    # import DFA from chaos module
-    from .. import chaos
 
     # integrate the signal (cumulative sum of deviations from mean)
     y = np.cumsum(rri - np.mean(rri))
