@@ -21,7 +21,7 @@ from .signals import ecg, tools
 import numpy as np
 from scipy import stats
 
-def quality_eda(x=None, methods=['bottcher'], sampling_rate=None, verbose=1):
+def quality_eda(x=None, methods=None, sampling_rate=None, verbose=1):
     """Compute the quality index for one EDA segment.
 
         Parameters
@@ -48,8 +48,11 @@ def quality_eda(x=None, methods=['bottcher'], sampling_rate=None, verbose=1):
     
     if sampling_rate is None:
         raise TypeError("Please specify the sampling rate.")
-    
-    assert len(x) > sampling_rate * 2, 'Segment must be 5s long'
+
+    if methods is None:
+        methods = ['bottcher']
+
+    assert len(x) > sampling_rate * 5, 'Segment must be 5s long'
 
     args, names = (), ()
     available_methods = ['bottcher']
@@ -67,9 +70,9 @@ def quality_eda(x=None, methods=['bottcher'], sampling_rate=None, verbose=1):
     return utils.ReturnTuple(args, names)
 
 
-def quality_ecg(segment, methods=['Level3'], sampling_rate=None, 
-                fisher=True, f_thr=0.01, threshold=0.9, bit=0, 
-                nseg=1024, num_spectrum=[5, 20], dem_spectrum=None, 
+def quality_ecg(segment, methods=None, sampling_rate=None,
+                fisher=True, f_thr=0.01, threshold=0.9, bit=0,
+                nseg=1024, num_spectrum=None, dem_spectrum=None,
                 mode_fsqi='simple', verbose=1):
     
     """Compute the quality index for one ECG segment.
@@ -96,6 +99,11 @@ def quality_ecg(segment, methods=['Level3'], sampling_rate=None,
     names : tuple
         Tuple containing the name of each method.
     """
+    if methods is None:
+        methods = ['Level3']
+    if num_spectrum is None:
+        num_spectrum = [5, 20]
+
     args, names = (), ()
     available_methods = ['Level3', 'pSQI', 'kSQI', 'fSQI', 'cSQI', 'hosSQI']
 

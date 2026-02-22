@@ -1271,12 +1271,6 @@ def heart_rate_turbulence(rri=None, vpc_indices=None, coupling_interval_min=300,
     following ventricular premature complexes (VPCs). The main parameters are:
     - Turbulence Onset (TO): Initial acceleration of heart rate after VPC
     - Turbulence Slope (TS): Subsequent deceleration of heart rate
-def hht_variability(rri=None, method='ceemdan', num_ensemble=100, noise_std=0.2,
-                   max_imf=None, max_iter=1000, sampling_rate=4.0, random_seed=None):
-    """Compute HRV features using Hilbert-Huang Transform (HHT).
-
-    Decomposes RR-intervals using CEEMDAN and extracts variability features
-    from each Intrinsic Mode Function (IMF).
 
     Parameters
     ----------
@@ -1440,6 +1434,74 @@ def hht_variability(rri=None, method='ceemdan', num_ensemble=100, noise_std=0.2,
 def _detect_vpcs(rri, coupling_interval_min=300, coupling_interval_max=2000,
                  prematurity_threshold=0.8, compensatory_pause_threshold=1.2):
     """Detects ventricular premature complexes (VPCs) in RRI sequence.
+
+    Parameters
+    ----------
+    rri : array
+        RR-intervals (ms).
+    coupling_interval_min : float
+        Minimum coupling interval (ms).
+    coupling_interval_max : float
+        Maximum coupling interval (ms).
+    prematurity_threshold : float
+        Prematurity criterion threshold.
+    compensatory_pause_threshold : float
+        Compensatory pause criterion threshold.
+
+    Returns
+    -------
+    vpc_indices : array
+        Indices of detected VPCs.
+    """
+
+    vpc_indices = []
+
+    # compute local average using sliding window
+    window_size = 5
+    local_avg = np.convolve(rri, np.ones(window_size)/window_size, mode='same')
+
+    for i in range(1, len(rri) - 1):
+        # get current and next RR interval
+        rr_current = rri[i]
+        rr_next = rri[i + 1]
+
+        # check coupling interval range
+        if rr_current < coupling_interval_min or rr_current > coupling_interval_max:
+            continue
+
+        # check prematurity criterion
+        # VPC coupling interval should be shorter than local average
+        if rr_current > prematurity_threshold * local_avg[i]:
+            continue
+
+        # check compensatory pause criterion
+        # Post-VPC interval should be longer than local average
+        if rr_next < compensatory_pause_threshold * local_avg[i]:
+            continue
+
+        # check that it's not part of a couplet or run
+        # (i.e., previous interval should be normal)
+        if i > 1:
+            rr_prev = rri[i - 1]
+            if rr_prev < prematurity_threshold * local_avg[i - 1]:
+                continue
+
+        vpc_indices.append(i)
+
+    return np.array(vpc_indices, dtype=int)
+
+
+def hht_variability(rri=None, method='ceemdan', num_ensemble=100, noise_std=0.2,
+                   max_imf=None, max_iter=1000, sampling_rate=4.0, random_seed=None):
+    """Compute HRV features using Hilbert-Huang Transform (HHT).
+
+    Decomposes RR-intervals using CEEMDAN and extracts variability features
+    from each Intrinsic Mode Function (IMF).
+
+    Parameters
+    ----------
+    rri : array
+        RR-intervals (ms).
     method : str, optional
         Decomposition method: 'emd', 'eemd', or 'ceemdan'. Default: 'ceemdan'.
     num_ensemble : int, optional
@@ -1571,60 +1633,6 @@ def hht_frequency_bands(rri=None, method='ceemdan', fbands=None, num_ensemble=10
     ----------
     rri : array
         RR-intervals (ms).
-    coupling_interval_min : float
-        Minimum coupling interval (ms).
-    coupling_interval_max : float
-        Maximum coupling interval (ms).
-    prematurity_threshold : float
-        Prematurity criterion threshold.
-    compensatory_pause_threshold : float
-        Compensatory pause criterion threshold.
-
-    Returns
-    -------
-    vpc_indices : array
-        Indices of detected VPCs.
-    """
-
-    vpc_indices = []
-
-    # compute local average using sliding window
-    window_size = 5
-    local_avg = np.convolve(rri, np.ones(window_size)/window_size, mode='same')
-
-    for i in range(1, len(rri) - 1):
-        # get current and next RR interval
-        rr_current = rri[i]
-        rr_next = rri[i + 1]
-
-        # check coupling interval range
-        if rr_current < coupling_interval_min or rr_current > coupling_interval_max:
-            continue
-
-        # check prematurity criterion
-        # VPC coupling interval should be shorter than local average
-        if rr_current > prematurity_threshold * local_avg[i]:
-            continue
-
-        # check compensatory pause criterion
-        # Post-VPC interval should be longer than local average
-        if rr_next < compensatory_pause_threshold * local_avg[i]:
-            continue
-
-        # check that it's not part of a couplet or run
-        # (i.e., previous interval should be normal)
-        if i > 1:
-            rr_prev = rri[i - 1]
-            if rr_prev < prematurity_threshold * local_avg[i - 1]:
-                continue
-
-        vpc_indices.append(i)
-
-    return np.array(vpc_indices, dtype=int)
-
-
-def _plot_hrt(rri, vpc_indices, to, ts):
-    """Plots Heart Rate Turbulence analysis results.
     method : str, optional
         Decomposition method: 'emd', 'eemd', or 'ceemdan'. Default: 'ceemdan'.
     fbands : dict, optional
@@ -1644,13 +1652,13 @@ def _plot_hrt(rri, vpc_indices, to, ts):
     Returns
     -------
     vlf_power : float
-        Very Low Frequency power (ms²).
+        Very Low Frequency power (ms^2).
     lf_power : float
-        Low Frequency power (ms²).
+        Low Frequency power (ms^2).
     hf_power : float
-        High Frequency power (ms²).
+        High Frequency power (ms^2).
     total_power : float
-        Total power (ms²).
+        Total power (ms^2).
     lf_hf_ratio : float
         LF/HF ratio.
     vlf_norm : float
@@ -1749,12 +1757,8 @@ def _plot_hrt(rri, vpc_indices, to, ts):
     return utils.ReturnTuple(args, names)
 
 
-def hht_nonlinear_features(rri=None, method='ceemdan', num_ensemble=100,
-                          noise_std=0.2, max_imf=None, sampling_rate=4.0,
-                          random_seed=None):
-    """Compute non-linear HRV features using HHT.
-
-    Extracts complexity and entropy measures from IMF decomposition.
+def _plot_hrt(rri, vpc_indices, to, ts):
+    """Plots Heart Rate Turbulence analysis results.
 
     Parameters
     ----------
@@ -1809,6 +1813,19 @@ def hht_nonlinear_features(rri=None, method='ceemdan', num_ensemble=100,
     else:
         warnings.warn("Could not generate HRT plot. No valid VPCs with "
                      "sufficient surrounding intervals.")
+
+
+def hht_nonlinear_features(rri=None, method='ceemdan', num_ensemble=100,
+                          noise_std=0.2, max_imf=None, sampling_rate=4.0,
+                          random_seed=None):
+    """Compute non-linear HRV features using HHT.
+
+    Extracts complexity and entropy measures from IMF decomposition.
+
+    Parameters
+    ----------
+    rri : array
+        RR-intervals (ms).
     method : str, optional
         Decomposition method. Default: 'ceemdan'.
     num_ensemble : int, optional

@@ -43,7 +43,7 @@ class BioSPPyGUI:
         try:
             # self.root.iconbitmap('icon.ico')  # Add icon if available
             pass
-        except:
+        except Exception:
             pass
 
         # Initialize signal manager

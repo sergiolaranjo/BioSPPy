@@ -842,7 +842,7 @@ def load_biosig(path, channel=None):
         try:
             # T0 is typically in a specific format, try to parse it
             mdata['start_datetime'] = hdr.T0
-        except:
+        except Exception:
             mdata['start_datetime'] = None
     else:
         mdata['start_datetime'] = None

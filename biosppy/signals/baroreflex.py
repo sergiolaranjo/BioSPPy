@@ -253,29 +253,78 @@ def _sequence_method(rri, sbp, sequence_length=3, sequence_threshold=1.0,
 
 def _find_sequences(sbp, rri, direction='up', min_length=3, threshold=1.0):
     """Find sequences of simultaneous changes in SBP and RRI.
-References
-----------
-.. [DiRienzo85] M. Di Rienzo, G. Parati, P. Castiglioni, R. Tordi, G. Mancia,
-   and A. Pedotti, "Baroreflex effectiveness index: an additional measure of
-   baroreflex control of heart rate in daily life," American Journal of
-   Physiology-Regulatory, Integrative and Comparative Physiology, vol. 280,
-   no. 3, pp. R744–R751, 2001.
 
-.. [Parati88] G. Parati, M. Di Rienzo, and G. Mancia, "How to measure
-   baroreflex sensitivity: from the cardiovascular laboratory to daily life,"
-   Journal of hypertension, vol. 18, no. 1, pp. 7–19, 2000.
-"""
+    Parameters
+    ----------
+    sbp : array
+        Systolic blood pressure values.
+    rri : array
+        RR intervals.
+    direction : str
+        'up' for increasing or 'down' for decreasing.
+    min_length : int
+        Minimum sequence length.
+    threshold : float
+        Minimum change threshold.
 
-# Imports
-# compat
-from __future__ import absolute_import, division, print_function
+    Returns
+    -------
+    sequences : list
+        List of sequences (dicts with 'sbp' and 'rri' arrays).
 
-# 3rd party
-import numpy as np
-from scipy import stats
+    References
+    ----------
+    .. [DiRienzo85] M. Di Rienzo, G. Parati, P. Castiglioni, R. Tordi, G. Mancia,
+       and A. Pedotti, "Baroreflex effectiveness index: an additional measure of
+       baroreflex control of heart rate in daily life," American Journal of
+       Physiology-Regulatory, Integrative and Comparative Physiology, vol. 280,
+       no. 3, pp. R744-R751, 2001.
 
-# local
-from .. import utils
+    .. [Parati88] G. Parati, M. Di Rienzo, and G. Mancia, "How to measure
+       baroreflex sensitivity: from the cardiovascular laboratory to daily life,"
+       Journal of hypertension, vol. 18, no. 1, pp. 7-19, 2000.
+    """
+    sequences = []
+    i = 0
+
+    while i < len(sbp) - min_length + 1:
+        # Check if we can start a sequence
+        seq_sbp = [sbp[i]]
+        seq_rri = [rri[i]]
+
+        j = i + 1
+        while j < len(sbp):
+            sbp_change = sbp[j] - sbp[j-1]
+            rri_change = rri[j] - rri[j-1]
+
+            # Check if both change in the same direction
+            if direction == 'up':
+                if sbp_change >= threshold and rri_change >= threshold:
+                    seq_sbp.append(sbp[j])
+                    seq_rri.append(rri[j])
+                    j += 1
+                else:
+                    break
+            elif direction == 'down':
+                if sbp_change <= -threshold and rri_change <= -threshold:
+                    seq_sbp.append(sbp[j])
+                    seq_rri.append(rri[j])
+                    j += 1
+                else:
+                    break
+
+        # Check if sequence is long enough
+        if len(seq_sbp) >= min_length:
+            sequences.append({
+                'sbp': np.array(seq_sbp),
+                'rri': np.array(seq_rri),
+                'start': i,
+                'end': j
+            })
+
+        i = j if j > i + 1 else i + 1
+
+    return sequences
 
 
 def sequential_method(sbp=None, rri=None, threshold_sbp=1.0, threshold_rri=5.0,
@@ -556,62 +605,83 @@ def baroreflex_effectiveness_index(sbp=None, rri=None, threshold_sbp=1.0,
     Parameters
     ----------
     sbp : array
-        Systolic blood pressure.
+        Systolic blood pressure values (mmHg) for each cardiac cycle.
     rri : array
-        RR intervals.
-    direction : str
-        'up' for increasing or 'down' for decreasing.
-    min_length : int
-        Minimum sequence length.
-    threshold : float
-        Minimum change threshold.
+        RR intervals (ms) for each cardiac cycle.
+    threshold_sbp : float, optional
+        Minimum change in SBP to consider a significant variation (mmHg).
+        Default: 1.0 mmHg.
+    threshold_rri : float, optional
+        Minimum change in RRI to consider a significant variation (ms).
+        Default: 5.0 ms.
 
     Returns
     -------
-    sequences : list
-        List of sequences (dicts with 'sbp' and 'rri' arrays).
+    bei : float
+        Baroreflex Effectiveness Index (percentage, 0-100).
+    n_sbp_ramps : int
+        Total number of SBP ramps detected.
+    n_effective_ramps : int
+        Number of SBP ramps followed by an RRI response.
+
+    Notes
+    -----
+    The BEI is calculated as:
+    BEI = (number of SBP ramps followed by RRI changes / total SBP ramps) x 100
+
+    A higher BEI indicates more effective baroreflex control. Normal values
+    are typically in the range of 30-60%.
+
+    Examples
+    --------
+    >>> bei, n_total, n_effective = baroreflex_effectiveness_index(
+    ...     sbp=sbp_values,
+    ...     rri=rri_values
+    ... )
+    >>> print(f"Baroreflex Effectiveness Index: {bei:.1f}%")
     """
-    sequences = []
-    i = 0
 
-    while i < len(sbp) - min_length + 1:
-        # Check if we can start a sequence
-        seq_sbp = [sbp[i]]
-        seq_rri = [rri[i]]
+    # Check inputs
+    if sbp is None:
+        raise TypeError("Please specify systolic blood pressure (SBP) values.")
+    if rri is None:
+        raise TypeError("Please specify RR interval (RRI) values.")
 
-        j = i + 1
-        while j < len(sbp):
-            sbp_change = sbp[j] - sbp[j-1]
-            rri_change = rri[j] - rri[j-1]
+    # Ensure numpy arrays
+    sbp = np.array(sbp, dtype=float)
+    rri = np.array(rri, dtype=float)
 
-            # Check if both change in the same direction
-            if direction == 'up':
-                if sbp_change >= threshold and rri_change >= threshold:
-                    seq_sbp.append(sbp[j])
-                    seq_rri.append(rri[j])
-                    j += 1
-                else:
-                    break
-            elif direction == 'down':
-                if sbp_change <= -threshold and rri_change <= -threshold:
-                    seq_sbp.append(sbp[j])
-                    seq_rri.append(rri[j])
-                    j += 1
-                else:
-                    break
+    # Check array lengths
+    if len(sbp) != len(rri):
+        raise ValueError("SBP and RRI arrays must have the same length.")
 
-        # Check if sequence is long enough
-        if len(seq_sbp) >= min_length:
-            sequences.append({
-                'sbp': np.array(seq_sbp),
-                'rri': np.array(seq_rri),
-                'start': i,
-                'end': j
-            })
+    # Compute differences
+    delta_sbp = np.diff(sbp)
+    delta_rri = np.diff(rri)
 
-        i = j if j > i + 1 else i + 1
+    # Identify SBP ramps (significant changes)
+    sbp_ramps = np.abs(delta_sbp) >= threshold_sbp
 
-    return sequences
+    # Identify RRI responses (significant changes)
+    rri_responses = np.abs(delta_rri) >= threshold_rri
+
+    # Check if SBP ramps are followed by RRI responses in the same direction
+    effective_ramps = sbp_ramps & rri_responses & (np.sign(delta_sbp) == np.sign(delta_rri))
+
+    # Compute BEI
+    n_sbp_ramps = np.sum(sbp_ramps)
+    n_effective_ramps = np.sum(effective_ramps)
+
+    if n_sbp_ramps > 0:
+        bei = (n_effective_ramps / n_sbp_ramps) * 100.0
+    else:
+        bei = np.nan
+
+    # Output
+    args = (bei, n_sbp_ramps, n_effective_ramps)
+    names = ('bei', 'n_sbp_ramps', 'n_effective_ramps')
+
+    return utils.ReturnTuple(args, names)
 
 
 def _spectral_method(rri, sbp, sampling_rate=4.0):
@@ -947,80 +1017,3 @@ def analyze_multichannel_baroreflex(mc_signal, ecg_channel='ECG',
     )
 
     return brs_results
-        Systolic blood pressure values (mmHg) for each cardiac cycle.
-    rri : array
-        RR intervals (ms) for each cardiac cycle.
-    threshold_sbp : float, optional
-        Minimum change in SBP to consider a significant variation (mmHg).
-        Default: 1.0 mmHg.
-    threshold_rri : float, optional
-        Minimum change in RRI to consider a significant variation (ms).
-        Default: 5.0 ms.
-
-    Returns
-    -------
-    bei : float
-        Baroreflex Effectiveness Index (percentage, 0-100).
-    n_sbp_ramps : int
-        Total number of SBP ramps detected.
-    n_effective_ramps : int
-        Number of SBP ramps followed by an RRI response.
-
-    Notes
-    -----
-    The BEI is calculated as:
-    BEI = (number of SBP ramps followed by RRI changes / total SBP ramps) × 100
-
-    A higher BEI indicates more effective baroreflex control. Normal values
-    are typically in the range of 30-60%.
-
-    Examples
-    --------
-    >>> bei, n_total, n_effective = baroreflex_effectiveness_index(
-    ...     sbp=sbp_values,
-    ...     rri=rri_values
-    ... )
-    >>> print(f"Baroreflex Effectiveness Index: {bei:.1f}%")
-    """
-
-    # Check inputs
-    if sbp is None:
-        raise TypeError("Please specify systolic blood pressure (SBP) values.")
-    if rri is None:
-        raise TypeError("Please specify RR interval (RRI) values.")
-
-    # Ensure numpy arrays
-    sbp = np.array(sbp, dtype=float)
-    rri = np.array(rri, dtype=float)
-
-    # Check array lengths
-    if len(sbp) != len(rri):
-        raise ValueError("SBP and RRI arrays must have the same length.")
-
-    # Compute differences
-    delta_sbp = np.diff(sbp)
-    delta_rri = np.diff(rri)
-
-    # Identify SBP ramps (significant changes)
-    sbp_ramps = np.abs(delta_sbp) >= threshold_sbp
-
-    # Identify RRI responses (significant changes)
-    rri_responses = np.abs(delta_rri) >= threshold_rri
-
-    # Check if SBP ramps are followed by RRI responses in the same direction
-    effective_ramps = sbp_ramps & rri_responses & (np.sign(delta_sbp) == np.sign(delta_rri))
-
-    # Compute BEI
-    n_sbp_ramps = np.sum(sbp_ramps)
-    n_effective_ramps = np.sum(effective_ramps)
-
-    if n_sbp_ramps > 0:
-        bei = (n_effective_ramps / n_sbp_ramps) * 100.0
-    else:
-        bei = np.nan
-
-    # Output
-    args = (bei, n_sbp_ramps, n_effective_ramps)
-    names = ('bei', 'n_sbp_ramps', 'n_effective_ramps')
-
-    return utils.ReturnTuple(args, names)

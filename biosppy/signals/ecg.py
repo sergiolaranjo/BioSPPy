@@ -2461,7 +2461,7 @@ def getQPositions(ecg_proc=None, show=False):
             )
             Q_positions.append(Q_position)
             Q_positions_template.append(mininums_from_template_left[0][-1])
-        except:
+        except Exception:
             pass
 
         # Get Q start position
@@ -2475,7 +2475,7 @@ def getQPositions(ecg_proc=None, show=False):
             )
             Q_start_positions.append(Q_start_position)
             Q_start_positions_template.append(maximum_from_template_Q_left[0][-1])
-        except:
+        except Exception:
             pass
     if show:
         plt.figure()
@@ -2553,7 +2553,7 @@ def getSPositions(ecg_proc=None, show=False):
             S_positions_template.append(
                 template_r_position + mininums_from_template_right[0][0]
             )
-        except:
+        except Exception:
             pass
         # Get S end position
         maximums_from_template_right = argrelextrema(template_right, np.greater)
@@ -2563,7 +2563,7 @@ def getSPositions(ecg_proc=None, show=False):
             S_end_positions_template.append(
                 template_r_position + maximums_from_template_right[0][0]
             )
-        except:
+        except Exception:
             pass
 
     if show:
@@ -2662,7 +2662,7 @@ def getPPositions(ecg_proc=None, show=False):
             )
             P_start_positions.append(P_start_position)
             P_start_positions_template.append(mininums_from_template_left[0][-1])
-        except:
+        except Exception:
             pass
 
         # Get P end position
@@ -2681,7 +2681,7 @@ def getPPositions(ecg_proc=None, show=False):
             P_end_positions_template.append(
                 max_from_template_left + mininums_from_template_right[0][0]
             )
-        except:
+        except Exception:
             pass
 
     if show:
@@ -2792,7 +2792,7 @@ def getTPositions(ecg_proc=None, show=False):
             T_start_positions_template.append(
                 template_r_position + min_from_template_T_left[0][-1]
             )
-        except:
+        except Exception:
             pass
 
         # Get T end position
@@ -2815,7 +2815,7 @@ def getTPositions(ecg_proc=None, show=False):
                 + max_from_template_right
                 + mininums_from_template_T_right[0][0]
             )
-        except:
+        except Exception:
             pass
 
     if show:

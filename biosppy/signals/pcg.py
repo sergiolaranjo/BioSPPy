@@ -80,7 +80,7 @@ def pcg(signal=None, sampling_rate=1000., units=None, path=None, show=True):
     filtered, fs, params = st.filter_signal(signal, 'butter', 'bandpass', order, passBand, sampling_rate)
 
     # find peaks
-    peaks, envelope = find_peaks(signal=filtered, sampling_rate=sampling_rate, filter=False)
+    peaks, envelope = find_peaks(signal=filtered, sampling_rate=sampling_rate, apply_filter=False)
     
     # classify heart sounds
     hs, = identify_heart_sounds(beats=peaks, sampling_rate=sampling_rate)
@@ -119,7 +119,7 @@ def pcg(signal=None, sampling_rate=1000., units=None, path=None, show=True):
 
     return utils.ReturnTuple(args, names)
 
-def find_peaks(signal=None,sampling_rate=1000.,filter=True):
+def find_peaks(signal=None, sampling_rate=1000., apply_filter=True):
     
     """Finds the peaks of the heart sounds from the homomorphic envelope
 
@@ -140,7 +140,7 @@ def find_peaks(signal=None,sampling_rate=1000.,filter=True):
     """
     
     # Compute homomorphic envelope
-    envelope, = homomorphic_filter(signal,sampling_rate,filter=filter)
+    envelope, = homomorphic_filter(signal, sampling_rate, apply_filter=apply_filter)
     envelope, = st.normalize(envelope)
     
     # Find the prominent peaks of the envelope
@@ -152,7 +152,7 @@ def find_peaks(signal=None,sampling_rate=1000.,filter=True):
                              ('peaks','homomorphic_envelope'))
 
 
-def homomorphic_filter(signal=None, sampling_rate=1000., f_LPF=8, order=2, filter=True):
+def homomorphic_filter(signal=None, sampling_rate=1000., f_LPF=8, order=2, apply_filter=True):
     """Finds the homomorphic envelope of a signal.
 
     Adapted to Python from original MATLAB code written by David Springer, 2016 (C), for
@@ -196,7 +196,7 @@ def homomorphic_filter(signal=None, sampling_rate=1000., f_LPF=8, order=2, filte
     # Filter Design
     passBand = np.array([25, 400])
     
-    if filter:
+    if apply_filter:
     # Band-Pass filtering of the PCG:        
         signal, fs, params = st.filter_signal(signal, 'butter', 'bandpass', order, passBand, sampling_rate)
         

@@ -78,7 +78,7 @@ def emg(signal=None, sampling_rate=1000., units=None, path=None, show=True):
     # plot
     if show:
         plotting.plot_emg(ts=ts,
-                          sampling_rate=1000.,
+                          sampling_rate=sampling_rate,
                           raw=signal,
                           filtered=filtered,
                           processed=None,

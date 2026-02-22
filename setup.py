@@ -36,14 +36,13 @@ REQUIRED = [
     'h5py',
     'matplotlib',
     'numpy',
+    'peakutils',
     'scikit-learn',
     'scipy',
     'shortuuid',
     'six',
     'joblib',
-    'opencv-python',
     'pywavelets',
-    'mock',
 ]
 
 # What packages are optional?

@@ -24,7 +24,6 @@ import matplotlib.gridspec as gridspec
 import matplotlib.patches as patches
 import matplotlib.lines as lines
 import numpy as np
-from unittest.mock import MagicMock
 
 # local
 from . import utils
@@ -142,7 +141,7 @@ def add_logo(fig):
         logo = fig.add_axes([0.90, 0.02, 0.08, 0.08], anchor='SE')
         logo.imshow(scientisst_logo, alpha=0.5)
         logo.axis('off')
-    except:
+    except Exception:
         pass
 
 
