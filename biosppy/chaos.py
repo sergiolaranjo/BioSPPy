@@ -447,7 +447,8 @@ def permutation_entropy(signal=None, order=3, delay=1, normalize=True):
 
     # normalize if requested
     if normalize:
-        max_pe = np.log2(np.math.factorial(order))
+        import math
+        max_pe = np.log2(float(math.factorial(order)))
         pe = pe / max_pe
 
     return utils.ReturnTuple((pe, order), ('pe', 'order'))
@@ -641,8 +642,8 @@ def higuchi_fd(signal=None, k_max=10):
             for i in range(len(indices) - 1):
                 Lm += np.abs(signal[indices[i + 1]] - signal[indices[i]])
 
-            # normalize
-            Lm = Lm * (N - 1) / (((len(indices) - 1) * k))
+            # normalize (Higuchi 1988: includes 1/k normalization factor)
+            Lm = Lm * (N - 1) / (((len(indices) - 1) * k * k))
             Lk.append(Lm)
 
         lengths[k - 1] = np.mean(Lk) if Lk else 0
@@ -876,8 +877,12 @@ def hurst_exponent(signal=None, min_win=10, max_win=None, n_wins=20):
 
     rs_values = np.array(rs_values)
 
+    if len(rs_values) < 2:
+        raise ValueError("Not enough valid R/S values to compute Hurst exponent.")
+
     # Hurst exponent (slope of log(R/S) vs log(n))
-    coeffs = np.polyfit(np.log(window_sizes[:len(rs_values)]), np.log(rs_values), 1)
+    valid_sizes = window_sizes[:len(rs_values)]
+    coeffs = np.polyfit(np.log(valid_sizes), np.log(rs_values), 1)
     H = coeffs[0]
 
     return utils.ReturnTuple((H, rs_values, window_sizes[:len(rs_values)]),

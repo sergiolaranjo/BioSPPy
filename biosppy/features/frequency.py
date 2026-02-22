@@ -221,11 +221,20 @@ def spectral_features(freqs=None, power=None, sampling_rate=1000.):
     feats = feats.append(fundamental_frequency, 'fundamental_frequency')
 
     # harmonic sum
-    if fundamental_frequency > (sampling_rate / 2 + 2):
+    n_harmonics = int((sampling_rate / 2) / fundamental_frequency) if fundamental_frequency > 0 else 0
+    if n_harmonics > 2:
         harmonics = np.array([n * fundamental_frequency for n in
-                              range(2, int((sampling_rate / 2) / fundamental_frequency), 1)]).astype(int)
-        sp_hrm = power[np.array([np.where(freqs >= h)[0][0] for h in harmonics])]
-        sum_harmonics = np.sum(sp_hrm)
+                              range(2, n_harmonics, 1)]).astype(int)
+        harmonic_indices = []
+        for h in harmonics:
+            idx = np.where(freqs >= h)[0]
+            if len(idx) > 0:
+                harmonic_indices.append(idx[0])
+        if len(harmonic_indices) > 0:
+            sp_hrm = power[np.array(harmonic_indices)]
+            sum_harmonics = np.sum(sp_hrm)
+        else:
+            sum_harmonics = None
     else:
         sum_harmonics = None
     feats = feats.append(sum_harmonics, 'sum_harmonics')
@@ -240,7 +249,8 @@ def spectral_features(freqs=None, power=None, sampling_rate=1000.):
         norm_cm_s = cum_en / cum_en[-1]
 
     if norm_cm_s is not None:
-        spectral_roll_on = freqs[np.argwhere(norm_cm_s >= 0.05)[0][0]]
+        idx = np.argwhere(norm_cm_s >= 0.05)
+        spectral_roll_on = freqs[idx[0][0]] if len(idx) > 0 else None
     else:
         spectral_roll_on = None
     feats = feats.append(spectral_roll_on, 'roll_on')
@@ -249,7 +259,8 @@ def spectral_features(freqs=None, power=None, sampling_rate=1000.):
     if norm_cm_s is None:
         spectral_roll_off = None
     else:
-        spectral_roll_off = freqs[np.argwhere(norm_cm_s >= 0.95)[0][0]]
+        idx = np.argwhere(norm_cm_s >= 0.95)
+        spectral_roll_off = freqs[idx[0][0]] if len(idx) > 0 else None
     feats = feats.append(spectral_roll_off, 'roll_off')
 
     # spectral centroid

@@ -153,14 +153,14 @@ class MultiChannelSignal(object):
                 signal = channel_data['signal']
 
                 # Compute cross-correlation
-                lag, corr = tools.synchronize(
-                    signal1=ref_signal,
-                    signal2=signal,
+                sync_result = tools.synchronize(
+                    x=ref_signal,
+                    y=signal,
                     detrend=True
                 )
 
                 # Convert lag to time offset
-                time_offset = lag / self.sampling_rate
+                time_offset = sync_result['delay'] / self.sampling_rate
                 offsets[name] = time_offset
                 self._sync_offset[name] = time_offset
 
@@ -306,10 +306,10 @@ class MultiChannelSignal(object):
 
             # Check if channel has heart rate information
             if channel_type in ['ecg', 'abp', 'ppg']:
-                if hasattr(processed, 'heart_rate_ts') and hasattr(processed, 'heart_rate'):
+                if 'heart_rate_ts' in processed.keys() and 'heart_rate' in processed.keys():
                     hr_signals[name] = {
-                        'ts': processed.heart_rate_ts,
-                        'hr': processed.heart_rate
+                        'ts': processed['heart_rate_ts'],
+                        'hr': processed['heart_rate']
                     }
 
         return hr_signals

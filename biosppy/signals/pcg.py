@@ -80,7 +80,7 @@ def pcg(signal=None, sampling_rate=1000., units=None, path=None, show=True):
     filtered, fs, params = st.filter_signal(signal, 'butter', 'bandpass', order, passBand, sampling_rate)
 
     # find peaks
-    peaks, envelope = find_peaks(signal=filtered, sampling_rate=sampling_rate, filter=False)
+    peaks, envelope = find_peaks(signal=filtered, sampling_rate=sampling_rate, apply_filter=False)
     
     # classify heart sounds
     hs, = identify_heart_sounds(beats=peaks, sampling_rate=sampling_rate)
@@ -119,7 +119,7 @@ def pcg(signal=None, sampling_rate=1000., units=None, path=None, show=True):
 
     return utils.ReturnTuple(args, names)
 
-def find_peaks(signal=None,sampling_rate=1000.,filter=True):
+def find_peaks(signal=None, sampling_rate=1000., apply_filter=True):
     
     """Finds the peaks of the heart sounds from the homomorphic envelope
 
@@ -140,7 +140,7 @@ def find_peaks(signal=None,sampling_rate=1000.,filter=True):
     """
     
     # Compute homomorphic envelope
-    envelope, = homomorphic_filter(signal,sampling_rate,filter=filter)
+    envelope, = homomorphic_filter(signal, sampling_rate, apply_filter=apply_filter)
     envelope, = st.normalize(envelope)
     
     # Find the prominent peaks of the envelope
@@ -152,7 +152,7 @@ def find_peaks(signal=None,sampling_rate=1000.,filter=True):
                              ('peaks','homomorphic_envelope'))
 
 
-def homomorphic_filter(signal=None, sampling_rate=1000., f_LPF=8, order=2, filter=True):
+def homomorphic_filter(signal=None, sampling_rate=1000., f_LPF=8, order=2, apply_filter=True):
     """Finds the homomorphic envelope of a signal.
 
     Adapted to Python from original MATLAB code written by David Springer, 2016 (C), for
@@ -196,7 +196,7 @@ def homomorphic_filter(signal=None, sampling_rate=1000., f_LPF=8, order=2, filte
     # Filter Design
     passBand = np.array([25, 400])
     
-    if filter:
+    if apply_filter:
     # Band-Pass filtering of the PCG:        
         signal, fs, params = st.filter_signal(signal, 'butter', 'bandpass', order, passBand, sampling_rate)
         
@@ -258,15 +258,15 @@ def get_avg_heart_rate(envelope=None, sampling_rate=1000.):
     min_index = int(0.3*sampling_rate)
     max_index = int(1.5*sampling_rate)
 
-    index = np.argmax(autocorrelation[min_index-1:max_index-1])
-    true_index = index+min_index-1
-    heartRate = 60/(true_index/sampling_rate)
-    
+    index = np.argmax(autocorrelation[min_index:max_index])
+    true_index = index + min_index
+    heartRate = 60 / (true_index / sampling_rate)
+
     max_sys_duration = int(np.round(((60/heartRate)*sampling_rate)/2))
     min_sys_duration = int(np.round(0.2*sampling_rate))
-    
-    pos = np.argmax(autocorrelation[min_sys_duration-1:max_sys_duration-1])
-    systolicTimeInterval = (min_sys_duration+pos)/sampling_rate
+
+    pos = np.argmax(autocorrelation[min_sys_duration:max_sys_duration])
+    systolicTimeInterval = (min_sys_duration + pos) / sampling_rate
     
 
     return utils.ReturnTuple((heartRate,systolicTimeInterval),
@@ -411,23 +411,31 @@ def ecg_based_segmentation(pcg_signal=None, ecg_signal=None, sampling_rate=1000.
         states[int(np.ceil(S2_index +((mean_S2 +(0*std_S2))/2))-1):end_pos] = 4
     
     # Set first and last sections of the signal (before first R-peak, and after last end T-wave)
-    first_location_of_definite_state = np.argwhere(states!=0)[0][0]
+    definite_states = np.argwhere(states != 0)
+    if len(definite_states) == 0:
+        states[:] = 2
+        if show:
+            fig, ax = plt.subplots(figsize=(15, 4))
+            t = np.linspace(0, round(len(pcg_signal)/sampling_rate), len(pcg_signal))
+        return states
+
+    first_location_of_definite_state = definite_states[0][0]
 
     if first_location_of_definite_state > 0:
         if states[first_location_of_definite_state] == 1:
             states[0:first_location_of_definite_state] = 4
-        
+
         if states[first_location_of_definite_state] == 3:
-            states[0:first_location_of_definite_state+1] = 2    
-    
-    last_location_of_definite_state = np.argwhere(states!=0)[-1][0]
+            states[0:first_location_of_definite_state+1] = 2
+
+    last_location_of_definite_state = definite_states[-1][0]
     
     if last_location_of_definite_state > 0:
         
         if states[last_location_of_definite_state] == 1:
             states[last_location_of_definite_state:] = 2
-        
-        if states[last_location_of_definite_state] == 1:
+
+        if states[last_location_of_definite_state] == 3:
             states[last_location_of_definite_state:] = 4
     
     # Set everywhere else as state 2:        

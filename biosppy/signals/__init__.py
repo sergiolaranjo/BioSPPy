@@ -22,6 +22,5 @@ physiological signals (biosignals):
 from __future__ import absolute_import, division, print_function
 
 # allow lazy loading
-from . import acc, abp, bvp, pcg, ppg, ecg, eda, eeg, emg, resp, tools, multichannel, baroreflex
-from . import acc, abp, baroreflex, bvp, pcg, ppg, ecg, eda, eeg, emg, hrv, resp, tools
-from . import acc, abp, bvp, pcg, ppg, ecg, eda, eeg, emg, resp, hrv, emd, tools
+from . import (abp, acc, baroreflex, bvp, ecg, eda, eeg, emd, emg, hrv,
+               multichannel, pcg, ppg, resp, tools)

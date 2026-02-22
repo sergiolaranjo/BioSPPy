@@ -159,9 +159,10 @@ def eda_events(signal=None, sampling_rate=1000., method="emotiphai", **kwargs):
     rise_times : array
         Rise times, i.e. onset-peak time difference.
     half_rec : array
-        Half Recovery times, i.e. time between peak and 63% amplitude.
+        Half Recovery times, i.e. time between peak and 50% amplitude.
     six_rec : array
-        63 % recovery times, i.e. time between peak and 50% amplitude.
+        63 % recovery times, i.e. time between peak and 63% recovery
+        (37% remaining amplitude).
 
     """
 
@@ -194,10 +195,9 @@ def eda_events(signal=None, sampling_rate=1000., method="emotiphai", **kwargs):
         raise ValueError("Could not find SCR pulses.")
 
     # compute phasic rate
-    try:
+    if len(peaks) > 1:
         phasic_rate = sampling_rate * (60. / np.diff(peaks))
-    except Exception as e:
-        print(e)
+    else:
         phasic_rate = None
 
     # compute rise times
@@ -513,13 +513,13 @@ def basic_scr(signal=None):
     if len(pi) == 0 or len(ni) == 0:
         raise ValueError("Could not find SCR pulses.")
 
-    # pair vectors
+    # pair vectors: ensure each minimum (onset) precedes its paired maximum
     if ni[0] > pi[0]:
-        ni = ni[1:]
+        pi = pi[1:]
     if pi[-1] < ni[-1]:
-        pi = pi[:-1]
-    if len(pi) > len(ni):
-        pi = pi[:-1]
+        ni = ni[:-1]
+    if len(ni) > len(pi):
+        ni = ni[:-1]
 
     li = min(len(pi), len(ni))
     i1 = pi[:li]
@@ -598,7 +598,7 @@ def kbk_scr(signal=None, sampling_rate=1000.0, min_amplitude=0.1):
     thr = min_amplitude * np.max(amps)
     idx = np.where(amps > thr)
 
-    scrs = np.array(scrs, dtype=np.object)[idx]
+    scrs = np.array(scrs, dtype=object)[idx]
     amps = np.array(amps)[idx]
     ZC = np.array(ZC)[np.array(idx) * 2]
     peaks = np.array(peaks, dtype=int)[idx]
@@ -732,7 +732,7 @@ def rec_times(signal=None, sampling_rate=1000., onsets=None, peaks=None):
         six_rec_amp = 0.37 * amps[i] + signal[onsets][i]
         try:
             wind = np.array(signal[peaks[i]:onsets[i + 1]])
-        except:
+        except Exception:
             wind = np.array(signal[peaks[i]:])  # last peak to end of signal
         half_rec_idx = np.argwhere(wind <= half_rec_amp)
         six_rec_idx = np.argwhere(wind <= six_rec_amp)

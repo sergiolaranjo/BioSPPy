@@ -31,7 +31,7 @@ References
 
 # Imports
 import numpy as np
-from scipy import interpolate
+from scipy import interpolate, signal as _signal
 from .. import utils
 
 
@@ -617,10 +617,8 @@ def hilbert_spectrum(imfs=None, sampling_rate=1000.0):
 
     # Process each IMF
     for i in range(n_imfs):
-        # Hilbert transform
-        analytic = np.fft.ifft(np.fft.fft(imfs[i]) *
-                              np.concatenate([[1], 2*np.ones(n_samples//2-1),
-                                            [1], np.zeros(n_samples//2-1 if n_samples % 2 == 0 else n_samples//2)]))
+        # Hilbert transform via scipy (handles both even and odd lengths)
+        analytic = _signal.hilbert(imfs[i])
 
         # Instantaneous amplitude
         inst_amplitude[i] = np.abs(analytic)

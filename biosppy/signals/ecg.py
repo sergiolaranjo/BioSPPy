@@ -24,7 +24,7 @@ import scipy.signal as ss
 import matplotlib.pyplot as plt
 from scipy import stats, integrate, interpolate
 import peakutils
-from scipy.ndimage import filters
+from scipy.ndimage import percentile_filter
 
 
 # local
@@ -105,6 +105,9 @@ def ecg(
         - `"engzee"` → `engzee_segmenter`
         - `"ssf"` → `ssf_segmenter`
         - `"pan-tompkins"` → `Pan_Tompkins_Plus_Plus_segmenter`
+        - `"elgendi"` → `elgendi_segmenter`
+        - `"kalidas"` → `kalidas_segmenter`
+        - `"nabian"` → `nabian_segmenter`
         If a different name is passed hamilton will be used.
     verbose_segmenting : bool, optional
         If True, prints which valid parameters (for the chosen segmenter)
@@ -164,11 +167,15 @@ def ecg(
     # segment
     segmenters = {
         "hamilton": hamilton_segmenter,
+        "christov": christov_segmenter,
         "ASI": ASI_segmenter,
         "gamboa": gamboa_segmenter,
         "engzee": engzee_segmenter,
         "ssf": ssf_segmenter,
         "pan-tompkins": Pan_Tompkins_Plus_Plus_segmenter,
+        "elgendi": elgendi_segmenter,
+        "kalidas": kalidas_segmenter,
+        "nabian": nabian_segmenter,
     }
     try:
         chosen_segmenter = segmenters[segmenter]
@@ -289,7 +296,7 @@ def _extract_heartbeats(signal=None, rpeaks=None, before=200, after=400):
             continue
         b = r + after
         if b > length:
-            break
+            continue
         templates.append(signal[a:b])
         newR.append(r)
 
@@ -315,7 +322,7 @@ def extract_heartbeats(
         Sampling frequency (Hz).
     before : float, optional
         Window size to include before the R peak (seconds).
-    after : int, optional
+    after : float, optional
         Window size to include after the R peak (seconds).
 
     Returns
@@ -514,9 +521,9 @@ def compare_segmentation(
         tIBIs = np.std(tIBI, ddof=1)
 
     # output
-    perf = float(TP) / len(reference)
-    acc = float(TP) / (TP + FP)
-    err = float(FP) / (TP + FP)
+    perf = float(TP) / len(reference) if len(reference) > 0 else 0.0
+    acc = float(TP) / (TP + FP) if (TP + FP) > 0 else 0.0
+    err = float(FP) / (TP + FP) if (TP + FP) > 0 else 0.0
 
     args = (
         TP,
@@ -991,7 +998,7 @@ def engzee_segmenter(signal=None, sampling_rate=1000.0, threshold=0.48):
         windowW = np.arange(nthfplus, nthfplus + v180ms)
         # Check if the condition y2[n] < Th holds for a specified
         # number of consecutive points (experimentally we found this number to be at least 10 points)"
-        i, f = windowW[0], windowW[-1] if windowW[-1] < len(y2) else -1
+        i, f = windowW[0], windowW[-1] if windowW[-1] < len(y2) else len(y2)
         hold_points = np.diff(np.nonzero(y2[i:f] < ThNew)[0])
         cont = 0
         for hp in hold_points:
@@ -1046,8 +1053,10 @@ def gamboa_segmenter(signal=None, sampling_rate=1000.0, tol=0.002):
     TH = 0.01
     F = np.cumsum(hist)
 
-    v0 = edges[np.nonzero(F > TH)[0][0]]
-    v1 = edges[np.nonzero(F < (1 - TH))[0][-1]]
+    idx_above = np.nonzero(F > TH)[0]
+    idx_below = np.nonzero(F < (1 - TH))[0]
+    v0 = edges[idx_above[0]] if len(idx_above) > 0 else edges[0]
+    v1 = edges[idx_below[-1]] if len(idx_below) > 0 else edges[-1]
 
     nrm = max([abs(v0), abs(v1)])
     norm_signal = signal / float(nrm)
@@ -1522,8 +1531,8 @@ def Pan_Tompkins_Plus_Plus_segmenter(signal=None, sampling_rate=1000.0):
 
         Wn = 5 * 2 / sampling_rate
         N = 3  # Order of 3 less processing
-        a, b = signal.butter(N, Wn, btype="highpass")  # Bandpass filtering
-        ecg_h = signal.filtfilt(a, b, ecg_l, padlen=3 * (max(len(a), len(b)) - 1))
+        a, b = ss.butter(N, Wn, btype="highpass")  # Bandpass filtering
+        ecg_h = ss.filtfilt(a, b, ecg_l, padlen=3 * (max(len(a), len(b)) - 1))
         ecg_h = ecg_h / np.max(
             np.abs(ecg_h)
         )  # Normalize by dividing high value. This reduces time of calculation
@@ -1959,6 +1968,737 @@ def Pan_Tompkins_Plus_Plus_segmenter(signal=None, sampling_rate=1000.0):
     return utils.ReturnTuple((qrs_i_raw.astype(int),), ("rpeaks",))
 
 
+def elgendi_segmenter(signal=None, sampling_rate=1000.0):
+    """R-peak detection using the Two Moving Averages method by Elgendi.
+
+    Uses two moving averages (short for QRS, long for beat) applied to the
+    squared bandpass-filtered ECG signal. Blocks of interest are detected
+    where the short moving average exceeds the long moving average plus an
+    offset.
+
+    Parameters
+    ----------
+    signal : array
+        Input filtered ECG signal.
+    sampling_rate : int, float, optional
+        Sampling frequency (Hz).
+
+    Returns
+    -------
+    rpeaks : array
+        R-peak location indices.
+
+    References
+    ----------
+    Elgendi M, Jonkman M, De Boer F. "Frequency Bands Effects on QRS
+    Detection." Proc. BioSig 2010.
+
+    Elgendi M. "Fast QRS Detection with an Optimized Knowledge-Based
+    Method: Evaluation on 11 Standard ECG Databases." PLoS ONE.
+    2013;8(9):e73557.
+    """
+
+    if signal is None:
+        raise TypeError("Please specify an input signal.")
+
+    signal = np.array(signal, dtype=float)
+    sampling_rate = float(sampling_rate)
+
+    # bandpass filter 8-20 Hz (optimal for QRS detection)
+    filtered, _, _ = st.filter_signal(signal=signal,
+                                       ftype='butter',
+                                       band='bandpass',
+                                       order=2,
+                                       frequency=[8, 20],
+                                       sampling_rate=sampling_rate)
+
+    # square the signal to enhance QRS complexes
+    squared = filtered ** 2
+
+    # W1: QRS window (0.12 seconds ~ QRS width)
+    w1 = int(0.12 * sampling_rate)
+    if w1 % 2 == 0:
+        w1 += 1  # ensure odd
+
+    # W2: beat window (0.611 seconds ~ avg beat period)
+    w2 = int(0.611 * sampling_rate)
+    if w2 % 2 == 0:
+        w2 += 1  # ensure odd
+
+    # moving averages
+    ma_qrs, _ = st.smoother(squared, kernel='boxcar', size=w1)
+    ma_beat, _ = st.smoother(squared, kernel='boxcar', size=w2)
+
+    # threshold: beat MA + offset (beta=0.08 per Elgendi 2013 optimization)
+    beta = 0.08
+    thr = ma_beat + beta * np.mean(squared)
+
+    # blocks of interest where QRS MA > threshold
+    blocks = (ma_qrs > thr).astype(int)
+
+    # find block boundaries
+    diff_blocks = np.diff(blocks)
+    block_starts = np.where(diff_blocks == 1)[0] + 1
+    block_ends = np.where(diff_blocks == -1)[0] + 1
+
+    if len(block_starts) == 0 or len(block_ends) == 0:
+        return utils.ReturnTuple((np.array([], dtype=int),), ('rpeaks',))
+
+    # ensure ends come after starts
+    if block_ends[0] < block_starts[0]:
+        block_ends = block_ends[1:]
+    n_blocks = min(len(block_starts), len(block_ends))
+
+    # minimum block width
+    min_width = int(0.08 * sampling_rate)
+
+    # find R-peaks as maximum within each block
+    rpeaks = []
+    min_delay = int(0.3 * sampling_rate)  # minimum 300ms between peaks
+
+    for i in range(n_blocks):
+        beg = block_starts[i]
+        end = block_ends[i]
+
+        if end - beg < min_width:
+            continue
+
+        # find max in original signal within block
+        peak_idx = beg + np.argmax(signal[beg:end])
+
+        if len(rpeaks) == 0 or (peak_idx - rpeaks[-1]) > min_delay:
+            rpeaks.append(peak_idx)
+
+    rpeaks = np.array(rpeaks, dtype=int)
+
+    return utils.ReturnTuple((rpeaks,), ('rpeaks',))
+
+
+def kalidas_segmenter(signal=None, sampling_rate=1000.0):
+    """R-peak detection using Stationary Wavelet Transform (SWT).
+
+    Uses the stationary wavelet transform with the 'db3' wavelet at level 3
+    to extract QRS-related detail coefficients. Applies squared-energy
+    moving window integration followed by Pan-Tompkins adaptive thresholding
+    with searchback for missed beats.
+
+    Parameters
+    ----------
+    signal : array
+        Input filtered ECG signal.
+    sampling_rate : int, float, optional
+        Sampling frequency (Hz).
+
+    Returns
+    -------
+    rpeaks : array
+        R-peak location indices.
+
+    References
+    ----------
+    Kalidas V, Tamil LS. "Real-time QRS detector using Stationary Wavelet
+    Transform for Automated ECG Analysis." Proc. IEEE 17th Int. Conf.
+    Bioinformatics and Bioengineering (BIBE), pp. 457-461, 2017.
+    """
+
+    if signal is None:
+        raise TypeError("Please specify an input signal.")
+
+    signal = np.array(signal, dtype=float)
+    sampling_rate = float(sampling_rate)
+
+    import pywt
+
+    n = len(signal)
+    swt_level = 3
+
+    # pad signal to length divisible by 2^swt_level
+    remainder = n % (2 ** swt_level)
+    if remainder != 0:
+        pad_len = (2 ** swt_level) - remainder
+        signal_padded = np.pad(signal, (0, pad_len), mode='edge')
+    else:
+        signal_padded = signal.copy()
+
+    # SWT decomposition with db3 wavelet, level 3
+    coeffs = pywt.swt(signal_padded, 'db3', level=swt_level)
+
+    # extract level-3 detail coefficients (captures QRS content)
+    # coeffs[0] is the highest level (level 3), [1] is the detail part
+    d3 = coeffs[0][1][:n]
+
+    # square the detail coefficients
+    squared = d3 ** 2
+
+    # moving window integration (window = max QRS duration ~150ms)
+    mwi_width = max(1, int(0.150 * sampling_rate))
+    mwi = np.convolve(squared, np.ones(mwi_width) / mwi_width, mode='same')
+
+    # blank initial transient
+    blank = min(int(0.3 * sampling_rate), len(mwi) - 1)
+    mwi[:blank] = 0
+
+    # Pan-Tompkins adaptive thresholding
+    min_distance = int(0.3 * sampling_rate)
+    min_missed_dist = int(0.25 * sampling_rate)
+
+    # find all local maxima
+    all_peaks, _ = ss.find_peaks(mwi, distance=max(1, min_distance // 2))
+
+    if len(all_peaks) == 0:
+        return utils.ReturnTuple((np.array([], dtype=int),), ('rpeaks',))
+
+    # adaptive SPKI/NPKI thresholding
+    spki = 0.0
+    npki = 0.0
+    signal_peaks = []
+    signal_peak_indices = []
+
+    for idx, peak in enumerate(all_peaks):
+        peak_value = mwi[peak]
+        thr1 = npki + 0.25 * (spki - npki)
+
+        if peak_value > thr1 and (len(signal_peaks) == 0 or
+                                   peak - signal_peaks[-1] > min_distance):
+            # searchback for missed beats
+            if len(signal_peaks) > 8:
+                rr_ave = (signal_peaks[-1] - signal_peaks[-8]) / 8
+                rr_missed = int(1.66 * rr_ave)
+                if peak - signal_peaks[-1] > rr_missed:
+                    # search for missed beat
+                    last_idx = signal_peak_indices[-1]
+                    missed = all_peaks[(all_peaks > signal_peaks[-1] + min_missed_dist) &
+                                       (all_peaks < peak - min_missed_dist)]
+                    thr2 = 0.5 * thr1
+                    missed = missed[mwi[missed] > thr2]
+                    if len(missed) > 0:
+                        best = missed[np.argmax(mwi[missed])]
+                        signal_peaks.append(best)
+                        signal_peak_indices.append(idx)
+
+            signal_peaks.append(peak)
+            signal_peak_indices.append(idx)
+            spki = 0.125 * peak_value + 0.875 * spki
+        else:
+            npki = 0.125 * peak_value + 0.875 * npki
+
+    # refine: find actual R-peak in original signal around each detection
+    rpeaks = []
+    search_win = int(0.05 * sampling_rate)
+    for sp in signal_peaks:
+        beg = max(0, sp - search_win)
+        end = min(n, sp + search_win)
+        rpeak = beg + np.argmax(signal[beg:end])
+        if len(rpeaks) == 0 or rpeak - rpeaks[-1] > int(0.2 * sampling_rate):
+            rpeaks.append(rpeak)
+
+    rpeaks = np.array(rpeaks, dtype=int)
+
+    return utils.ReturnTuple((rpeaks,), ('rpeaks',))
+
+
+def nabian_segmenter(signal=None, sampling_rate=1000.0):
+    """R-peak detection using the sliding window maximum approach.
+
+    For each sample, checks whether it is the maximum within a surrounding
+    window of 400ms on each side (800ms total). If so, it must be a
+    dominant local peak (likely an R-peak). Very simple and suitable for
+    real-time streaming applications.
+
+    Parameters
+    ----------
+    signal : array
+        Input filtered ECG signal.
+    sampling_rate : int, float, optional
+        Sampling frequency (Hz).
+
+    Returns
+    -------
+    rpeaks : array
+        R-peak location indices.
+
+    References
+    ----------
+    Nabian M, Yin Y, Wormwood J, Quigley KS, Barrett LF, Ostadabbas S.
+    "An Open-Source Feature Extraction Tool for the Analysis of Peripheral
+    Physiological Data." IEEE J Transl Eng Health Med. 2018;6:1-11.
+    """
+
+    if signal is None:
+        raise TypeError("Please specify an input signal.")
+
+    signal = np.array(signal, dtype=float)
+    sampling_rate = float(sampling_rate)
+
+    # 400ms window on each side (heart rate cannot exceed ~150 bpm safely,
+    # so two R-peaks cannot appear within 400ms)
+    window_size = int(0.4 * sampling_rate)
+
+    if window_size < 1:
+        window_size = 1
+
+    n = len(signal)
+    peaks = []
+
+    # for each sample, check if it's the maximum in the surrounding window
+    for i in range(window_size, n - window_size):
+        beg = i - window_size
+        end = i + window_size
+        if signal[i] == np.max(signal[beg:end]):
+            peaks.append(i)
+
+    rpeaks = np.array(peaks, dtype=int)
+
+    return utils.ReturnTuple((rpeaks,), ('rpeaks',))
+
+
+def ecg_wavelet_delineation(signal=None, rpeaks=None, sampling_rate=1000.0):
+    """ECG wave delineation using the Martinez et al. (2004) wavelet algorithm.
+
+    Uses the undecimated (a trous) dyadic wavelet transform with a quadratic
+    spline wavelet to detect P-wave, QRS complex, and T-wave boundaries.
+    The wavelet transform's zero-crossings correspond to peaks in the smoothed
+    signal, while modulus maxima correspond to steepest slopes.
+
+    Parameters
+    ----------
+    signal : array
+        Filtered ECG signal.
+    rpeaks : array
+        R-peak location indices.
+    sampling_rate : int, float, optional
+        Sampling frequency (Hz).
+
+    Returns
+    -------
+    p_onsets : array
+        P-wave onset indices.
+    p_peaks : array
+        P-wave peak indices.
+    p_offsets : array
+        P-wave offset indices.
+    qrs_onsets : array
+        QRS onset indices.
+    q_peaks : array
+        Q-wave peak indices.
+    s_peaks : array
+        S-wave peak indices.
+    qrs_offsets : array
+        QRS offset indices.
+    t_onsets : array
+        T-wave onset indices.
+    t_peaks : array
+        T-wave peak indices.
+    t_offsets : array
+        T-wave offset indices.
+    qrs_durations : array
+        QRS durations (ms).
+    qt_intervals : array
+        QT intervals (ms).
+    qtc_bazett : array
+        QTc intervals using Bazett's formula (ms).
+    pr_intervals : array
+        PR intervals (ms).
+
+    References
+    ----------
+    Martinez JP, Almeida R, Olmos S, Rocha AP, Laguna P. "A wavelet-based
+    ECG delineator: evaluation on standard databases." IEEE Trans Biomed Eng.
+    2004;51(4):570-581.
+
+    Notes
+    -----
+    * Internally resamples to 250 Hz (the algorithm's design frequency).
+    * Uses the quadratic spline wavelet via the a trous algorithm.
+    * Handles monophasic and biphasic P/T waves.
+    * QTc is computed using Bazett's formula: QTc = QT / sqrt(RR).
+    """
+
+    if signal is None or rpeaks is None:
+        raise TypeError("Please specify an ECG signal and R-peak locations.")
+
+    signal = np.array(signal, dtype=float)
+    rpeaks = np.array(rpeaks, dtype=int)
+    sampling_rate = float(sampling_rate)
+
+    if len(rpeaks) < 3:
+        raise ValueError("Need at least 3 R-peaks for delineation.")
+
+    # --- Internal resampling to 250 Hz ---
+    target_fs = 250.0
+    if abs(sampling_rate - target_fs) > 1.0:
+        from scipy.signal import resample as _resample
+        n_orig = len(signal)
+        n_target = int(round(n_orig * target_fs / sampling_rate))
+        sig250 = _resample(signal, n_target)
+        rp250 = np.round(rpeaks * target_fs / sampling_rate).astype(int)
+        rp250 = np.clip(rp250, 0, len(sig250) - 1)
+        scale_factor = sampling_rate / target_fs
+    else:
+        sig250 = signal
+        rp250 = rpeaks.copy()
+        target_fs = sampling_rate
+        scale_factor = 1.0
+
+    N = len(sig250)
+
+    # --- A trous wavelet transform with quadratic spline wavelet ---
+    # H = [1/8, 3/8, 3/8, 1/8] (low-pass smoothing)
+    # G = [2, -2] (high-pass detail / first derivative)
+    max_scale = 5
+    w = np.zeros((max_scale, N))  # wavelet coefficients at scales 2^1..2^5
+
+    approx = sig250.copy()
+    for k in range(max_scale):
+        gap = 2 ** k  # zero-insertion gap
+
+        # high-pass (detail) convolution with G upsampled
+        detail = np.zeros(N)
+        for n in range(N):
+            idx0 = n
+            idx1 = n - gap
+            v0 = approx[idx0] if 0 <= idx0 < N else 0.0
+            v1 = approx[idx1] if 0 <= idx1 < N else 0.0
+            detail[n] = 2.0 * v0 - 2.0 * v1
+        w[k] = detail
+
+        # low-pass (smoothing) convolution with H upsampled
+        new_approx = np.zeros(N)
+        h_coeffs = [1.0 / 8, 3.0 / 8, 3.0 / 8, 1.0 / 8]
+        h_offsets = [0, gap, 2 * gap, 3 * gap]
+        for n in range(N):
+            val = 0.0
+            for ci, oi in zip(h_coeffs, h_offsets):
+                idx = n - oi
+                if 0 <= idx < N:
+                    val += ci * approx[idx]
+            new_approx[n] = val
+        approx = new_approx
+
+    # --- Helper: find modulus maxima in a segment ---
+    def _find_mml(wk, start, end, thresh):
+        """Find local maxima of |wk| that exceed thresh in [start, end)."""
+        start = max(0, int(start))
+        end = min(N, int(end))
+        if end - start < 3:
+            return np.array([], dtype=int)
+        seg = np.abs(wk[start:end])
+        mml = []
+        for j in range(1, len(seg) - 1):
+            if seg[j] > seg[j - 1] and seg[j] >= seg[j + 1] and seg[j] > thresh:
+                mml.append(start + j)
+        return np.array(mml, dtype=int)
+
+    def _find_zero_crossing(wk, a, b):
+        """Find zero-crossing of wk between indices a and b."""
+        a, b = int(a), int(b)
+        if a >= b or a < 0 or b >= N:
+            return (a + b) // 2
+        seg = wk[a:b + 1]
+        # zero-crossing = location of minimum absolute value
+        return a + np.argmin(np.abs(seg))
+
+    # RMS thresholds per scale
+    eps = np.array([np.sqrt(np.mean(w[k] ** 2)) for k in range(max_scale)])
+
+    # --- Initialize output arrays ---
+    n_beats = len(rp250)
+    p_onsets_250 = np.full(n_beats, -1, dtype=int)
+    p_peaks_250 = np.full(n_beats, -1, dtype=int)
+    p_offsets_250 = np.full(n_beats, -1, dtype=int)
+    qrs_onsets_250 = np.full(n_beats, -1, dtype=int)
+    q_peaks_250 = np.full(n_beats, -1, dtype=int)
+    s_peaks_250 = np.full(n_beats, -1, dtype=int)
+    qrs_offsets_250 = np.full(n_beats, -1, dtype=int)
+    t_onsets_250 = np.full(n_beats, -1, dtype=int)
+    t_peaks_250 = np.full(n_beats, -1, dtype=int)
+    t_offsets_250 = np.full(n_beats, -1, dtype=int)
+
+    # scale 2^2 (index 1) for QRS, scale 2^4 (index 3) for P and T waves
+    w_qrs = w[1]   # scale 2^2
+    w_pt = w[3]    # scale 2^4
+
+    for i, rpeak in enumerate(rp250):
+        rr_before = (rp250[i] - rp250[i - 1]) if i > 0 else int(0.8 * target_fs)
+        rr_after = (rp250[i + 1] - rp250[i]) if i < n_beats - 1 else int(0.8 * target_fs)
+
+        # ==================== QRS Delineation ====================
+        win_qrs = int(0.065 * target_fs)  # 65ms window
+        qrs_beg = max(0, rpeak - win_qrs)
+        qrs_end = min(N, rpeak + win_qrs)
+
+        # Find MML in QRS region at scale 2^2
+        qrs_peak_amp = np.max(np.abs(w_qrs[qrs_beg:qrs_end])) if qrs_end > qrs_beg else 0
+        qrs_thresh = 0.01 * qrs_peak_amp
+        mml_qrs = _find_mml(w_qrs, qrs_beg, qrs_end, qrs_thresh)
+
+        if len(mml_qrs) >= 2:
+            # Find Q, R, S peaks via zero-crossings between opposite-sign MML
+            for j in range(len(mml_qrs) - 1):
+                m1, m2 = mml_qrs[j], mml_qrs[j + 1]
+                if w_qrs[m1] * w_qrs[m2] < 0:  # opposite signs
+                    zc = _find_zero_crossing(w_qrs, m1, m2)
+
+                    if w_qrs[m1] > 0:
+                        # positive-then-negative = positive peak (R wave)
+                        pass  # R-peak already known
+                    else:
+                        # negative-then-positive = negative peak (Q or S)
+                        if zc < rpeak:
+                            q_peaks_250[i] = zc
+                        else:
+                            s_peaks_250[i] = zc
+
+            # If Q not found via zero-crossings, use signal minimum
+            if q_peaks_250[i] < 0:
+                q_start = max(0, rpeak - int(0.08 * target_fs))
+                seg = sig250[q_start:rpeak]
+                if len(seg) > 0:
+                    q_peaks_250[i] = q_start + np.argmin(seg)
+
+            if s_peaks_250[i] < 0:
+                s_end = min(N, rpeak + int(0.08 * target_fs))
+                seg = sig250[rpeak:s_end]
+                if len(seg) > 1:
+                    s_peaks_250[i] = rpeak + np.argmin(seg)
+
+            # --- QRS Onset ---
+            # nfirst = first significant MML before R-peak
+            pre_mml = mml_qrs[mml_qrs < rpeak]
+            if len(pre_mml) > 0:
+                nfirst = pre_mml[0]
+                gamma_pre = 0.06 * qrs_peak_amp
+                search_lim = max(0, nfirst - int(0.12 * target_fs))
+
+                # threshold depends on polarity
+                if w_qrs[nfirst] > 0:
+                    xi_on = 0.05 * w_qrs[nfirst]
+                else:
+                    xi_on = 0.07 * w_qrs[nfirst]
+
+                # check for additional MML before nfirst
+                extra_mml = _find_mml(w_qrs, search_lim, nfirst, gamma_pre)
+                if len(extra_mml) > 0:
+                    nfirst = extra_mml[0]
+                    xi_on = 0.05 * w_qrs[nfirst]
+
+                # search backward for crossing
+                seg = w_qrs[search_lim:nfirst]
+                if len(seg) > 0:
+                    if xi_on > 0:
+                        below = np.where(seg < xi_on)[0]
+                    else:
+                        below = np.where(seg > xi_on)[0]
+                    if len(below) > 0:
+                        qrs_onsets_250[i] = search_lim + below[-1]
+                    else:
+                        qrs_onsets_250[i] = search_lim
+
+            # --- QRS Offset ---
+            post_mml = mml_qrs[mml_qrs > rpeak]
+            if len(post_mml) > 0:
+                nlast = post_mml[-1]
+                gamma_post = 0.09 * qrs_peak_amp
+                search_lim = min(N, nlast + int(0.12 * target_fs))
+
+                if w_qrs[nlast] > 0:
+                    xi_end = 0.125 * w_qrs[nlast]
+                else:
+                    xi_end = 0.71 * w_qrs[nlast]
+
+                extra_mml = _find_mml(w_qrs, nlast + 1, search_lim, gamma_post)
+                if len(extra_mml) > 0:
+                    nlast = extra_mml[-1]
+                    xi_end = 0.125 * w_qrs[nlast]
+
+                seg = w_qrs[nlast:search_lim]
+                if len(seg) > 0:
+                    if xi_end > 0:
+                        below = np.where(seg < xi_end)[0]
+                    else:
+                        below = np.where(seg > xi_end)[0]
+                    if len(below) > 0:
+                        qrs_offsets_250[i] = nlast + below[0]
+                    else:
+                        qrs_offsets_250[i] = min(nlast + int(0.04 * target_fs),
+                                                 N - 1)
+
+        else:
+            # fallback: simple signal-based Q/S detection
+            q_start = max(0, rpeak - int(0.08 * target_fs))
+            seg = sig250[q_start:rpeak]
+            if len(seg) > 0:
+                q_peaks_250[i] = q_start + np.argmin(seg)
+            s_end = min(N, rpeak + int(0.08 * target_fs))
+            seg = sig250[rpeak:s_end]
+            if len(seg) > 1:
+                s_peaks_250[i] = rpeak + np.argmin(seg)
+
+        # Fallback QRS onset/offset if not found
+        if qrs_onsets_250[i] < 0 and q_peaks_250[i] > 0:
+            qrs_onsets_250[i] = max(0, q_peaks_250[i] - int(0.02 * target_fs))
+        if qrs_offsets_250[i] < 0 and s_peaks_250[i] > 0:
+            qrs_offsets_250[i] = min(N - 1,
+                                     s_peaks_250[i] + int(0.02 * target_fs))
+
+        # ==================== T Wave Delineation ====================
+        t_search_start = qrs_offsets_250[i] if qrs_offsets_250[i] > 0 else rpeak + int(0.08 * target_fs)
+        t_search_end = min(N, rpeak + int(min(0.6 * rr_after, 0.42 * target_fs)))
+
+        if t_search_end > t_search_start + 3:
+            # Global and local thresholds for T wave at scale 2^4
+            eps_t = 0.25 * eps[3]
+            local_max = np.max(np.abs(w_pt[t_search_start:t_search_end]))
+            gamma_t = 0.125 * local_max
+            thresh_t = max(eps_t, gamma_t)
+
+            mml_t = _find_mml(w_pt, t_search_start, t_search_end, thresh_t)
+
+            if len(mml_t) >= 2:
+                # Monophasic T: 2 MML with opposite signs
+                # Biphasic T: >= 3 MML
+                # Find first opposite-sign pair
+                nfirst_t = mml_t[0]
+                nlast_t = mml_t[-1]
+
+                if len(mml_t) == 2:
+                    # monophasic T
+                    t_peaks_250[i] = _find_zero_crossing(w_pt, mml_t[0], mml_t[1])
+                elif len(mml_t) >= 3:
+                    # biphasic T: pick the larger peak
+                    zc1 = _find_zero_crossing(w_pt, mml_t[0], mml_t[1])
+                    zc2 = _find_zero_crossing(w_pt, mml_t[1], mml_t[2])
+                    amp1 = abs(sig250[zc1] - np.mean(sig250[t_search_start:t_search_end]))
+                    amp2 = abs(sig250[zc2] - np.mean(sig250[t_search_start:t_search_end]))
+                    t_peaks_250[i] = zc1 if amp1 >= amp2 else zc2
+
+                # T onset
+                if t_peaks_250[i] > 0:
+                    xi_t_on = 0.25 * abs(w_pt[nfirst_t])
+                    search_start = max(t_search_start, nfirst_t - int(0.08 * target_fs))
+                    seg = np.abs(w_pt[search_start:nfirst_t])
+                    if len(seg) > 0:
+                        below = np.where(seg < xi_t_on)[0]
+                        if len(below) > 0:
+                            t_onsets_250[i] = search_start + below[-1]
+
+                    # T offset
+                    xi_t_end = 0.4 * abs(w_pt[nlast_t])
+                    search_end = min(N, nlast_t + int(0.08 * target_fs))
+                    seg = np.abs(w_pt[nlast_t:search_end])
+                    if len(seg) > 0:
+                        below = np.where(seg < xi_t_end)[0]
+                        if len(below) > 0:
+                            t_offsets_250[i] = nlast_t + below[0]
+
+        # ==================== P Wave Delineation ====================
+        p_search_ref = qrs_onsets_250[i] if qrs_onsets_250[i] > 0 else rpeak
+        p_search_end = max(0, p_search_ref - int(0.02 * target_fs))
+        p_search_start = max(0, p_search_ref - int(0.2 * target_fs))
+
+        if p_search_end > p_search_start + 3:
+            # Global and local thresholds for P wave at scale 2^4
+            eps_p = 0.02 * eps[3]
+            local_max = np.max(np.abs(w_pt[p_search_start:p_search_end]))
+            gamma_p = 0.0125 * local_max
+            thresh_p = max(eps_p, gamma_p)
+
+            mml_p = _find_mml(w_pt, p_search_start, p_search_end, thresh_p)
+
+            if len(mml_p) >= 2:
+                nfirst_p = mml_p[0]
+                nlast_p = mml_p[-1]
+
+                if len(mml_p) == 2:
+                    # monophasic P
+                    p_peaks_250[i] = _find_zero_crossing(w_pt, mml_p[0], mml_p[1])
+                elif len(mml_p) >= 3:
+                    # biphasic P
+                    zc1 = _find_zero_crossing(w_pt, mml_p[0], mml_p[1])
+                    zc2 = _find_zero_crossing(w_pt, mml_p[1], mml_p[2])
+                    amp1 = abs(sig250[zc1] - np.mean(sig250[p_search_start:p_search_end]))
+                    amp2 = abs(sig250[zc2] - np.mean(sig250[p_search_start:p_search_end]))
+                    p_peaks_250[i] = zc1 if amp1 >= amp2 else zc2
+
+                # P onset
+                if p_peaks_250[i] > 0:
+                    xi_p_on = 0.5 * abs(w_pt[nfirst_p])
+                    search_start = max(p_search_start, nfirst_p - int(0.04 * target_fs))
+                    seg = np.abs(w_pt[search_start:nfirst_p])
+                    if len(seg) > 0:
+                        below = np.where(seg < xi_p_on)[0]
+                        if len(below) > 0:
+                            p_onsets_250[i] = search_start + below[-1]
+
+                    # P offset
+                    xi_p_end = 0.9 * abs(w_pt[nlast_p])
+                    search_end = min(p_search_end, nlast_p + int(0.04 * target_fs))
+                    seg = np.abs(w_pt[nlast_p:search_end])
+                    if len(seg) > 0:
+                        below = np.where(seg < xi_p_end)[0]
+                        if len(below) > 0:
+                            p_offsets_250[i] = nlast_p + below[0]
+
+    # --- Map indices back to original sampling rate ---
+    def _map_back(arr):
+        result = arr.copy()
+        if scale_factor != 1.0:
+            valid = result >= 0
+            result[valid] = np.round(result[valid] * scale_factor).astype(int)
+            result[valid] = np.clip(result[valid], 0, len(signal) - 1)
+        return result
+
+    p_onsets = _map_back(p_onsets_250)
+    p_peaks_arr = _map_back(p_peaks_250)
+    p_offsets = _map_back(p_offsets_250)
+    qrs_onsets = _map_back(qrs_onsets_250)
+    q_peaks = _map_back(q_peaks_250)
+    s_peaks = _map_back(s_peaks_250)
+    qrs_offsets = _map_back(qrs_offsets_250)
+    t_onsets = _map_back(t_onsets_250)
+    t_peaks_arr = _map_back(t_peaks_250)
+    t_offsets = _map_back(t_offsets_250)
+
+    # --- Compute derived intervals ---
+    n_beats = len(rpeaks)
+    qrs_durations = np.full(n_beats, np.nan)
+    qt_intervals = np.full(n_beats, np.nan)
+    qtc_bazett = np.full(n_beats, np.nan)
+    pr_intervals = np.full(n_beats, np.nan)
+
+    for i in range(n_beats):
+        if qrs_onsets[i] > 0 and qrs_offsets[i] > 0:
+            qrs_durations[i] = (qrs_offsets[i] - qrs_onsets[i]) / sampling_rate * 1000.0
+
+        if qrs_onsets[i] > 0 and t_offsets[i] > 0:
+            qt_intervals[i] = (t_offsets[i] - qrs_onsets[i]) / sampling_rate * 1000.0
+
+            if i < n_beats - 1:
+                rr_sec = (rpeaks[i + 1] - rpeaks[i]) / sampling_rate
+            elif i > 0:
+                rr_sec = (rpeaks[i] - rpeaks[i - 1]) / sampling_rate
+            else:
+                rr_sec = 1.0
+
+            if rr_sec > 0:
+                qtc_bazett[i] = qt_intervals[i] / np.sqrt(rr_sec)
+
+        if p_onsets[i] > 0 and qrs_onsets[i] > 0:
+            pr_intervals[i] = (qrs_onsets[i] - p_onsets[i]) / sampling_rate * 1000.0
+
+    # output
+    args = (p_onsets, p_peaks_arr, p_offsets,
+            qrs_onsets, q_peaks, s_peaks, qrs_offsets,
+            t_onsets, t_peaks_arr, t_offsets,
+            qrs_durations, qt_intervals, qtc_bazett, pr_intervals)
+    names = ('p_onsets', 'p_peaks', 'p_offsets',
+             'qrs_onsets', 'q_peaks', 's_peaks', 'qrs_offsets',
+             't_onsets', 't_peaks', 't_offsets',
+             'qrs_durations', 'qt_intervals', 'qtc_bazett', 'pr_intervals')
+
+    return utils.ReturnTuple(args, names)
+
+
 def find_artifacts(peaks, sampling_rate):
     """find_artifacts: find and classify artifacts
 
@@ -2112,8 +2852,8 @@ def estimate_th(x, alpha, ww):
 
     x_abs = np.abs(x)
 
-    q1 = filters.percentile_filter(x_abs, 25, size=ww, mode="reflect")
-    q3 = filters.percentile_filter(x_abs, 75, size=ww, mode="reflect")
+    q1 = percentile_filter(x_abs, 25, size=ww, mode="reflect")
+    q3 = percentile_filter(x_abs, 75, size=ww, mode="reflect")
 
     th = alpha * ((q3 - q1) / 2)
 
@@ -2461,7 +3201,7 @@ def getQPositions(ecg_proc=None, show=False):
             )
             Q_positions.append(Q_position)
             Q_positions_template.append(mininums_from_template_left[0][-1])
-        except:
+        except Exception:
             pass
 
         # Get Q start position
@@ -2475,7 +3215,7 @@ def getQPositions(ecg_proc=None, show=False):
             )
             Q_start_positions.append(Q_start_position)
             Q_start_positions_template.append(maximum_from_template_Q_left[0][-1])
-        except:
+        except Exception:
             pass
     if show:
         plt.figure()
@@ -2553,7 +3293,7 @@ def getSPositions(ecg_proc=None, show=False):
             S_positions_template.append(
                 template_r_position + mininums_from_template_right[0][0]
             )
-        except:
+        except Exception:
             pass
         # Get S end position
         maximums_from_template_right = argrelextrema(template_right, np.greater)
@@ -2563,7 +3303,7 @@ def getSPositions(ecg_proc=None, show=False):
             S_end_positions_template.append(
                 template_r_position + maximums_from_template_right[0][0]
             )
-        except:
+        except Exception:
             pass
 
     if show:
@@ -2662,7 +3402,7 @@ def getPPositions(ecg_proc=None, show=False):
             )
             P_start_positions.append(P_start_position)
             P_start_positions_template.append(mininums_from_template_left[0][-1])
-        except:
+        except Exception:
             pass
 
         # Get P end position
@@ -2681,7 +3421,7 @@ def getPPositions(ecg_proc=None, show=False):
             P_end_positions_template.append(
                 max_from_template_left + mininums_from_template_right[0][0]
             )
-        except:
+        except Exception:
             pass
 
     if show:
@@ -2792,7 +3532,7 @@ def getTPositions(ecg_proc=None, show=False):
             T_start_positions_template.append(
                 template_r_position + min_from_template_T_left[0][-1]
             )
-        except:
+        except Exception:
             pass
 
         # Get T end position
@@ -2815,7 +3555,7 @@ def getTPositions(ecg_proc=None, show=False):
                 + max_from_template_right
                 + mininums_from_template_T_right[0][0]
             )
-        except:
+        except Exception:
             pass
 
     if show:
@@ -3006,7 +3746,8 @@ def fSQI(
 
     def power_in_range(f_range, f, Pxx_den):
         _indexes = np.where((f >= f_range[0]) & (f <= f_range[1]))[0]
-        _power = integrate.trapz(Pxx_den[_indexes], f[_indexes])
+        _trapz = getattr(integrate, 'trapezoid', getattr(integrate, 'trapz', None))
+        _power = _trapz(Pxx_den[_indexes], f[_indexes])
         return _power
 
     if ecg_signal is None:
@@ -3019,6 +3760,9 @@ def fSQI(
         dem_power = power_in_range([0, float(fs / 2.0)], f, Pxx_den)
     else:
         dem_power = power_in_range(dem_spectrum, f, Pxx_den)
+
+    if dem_power == 0:
+        return 0.0
 
     if mode == "simple":
         return num_power / dem_power

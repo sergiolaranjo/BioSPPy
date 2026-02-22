@@ -21,7 +21,7 @@ from .signals import ecg, tools
 import numpy as np
 from scipy import stats
 
-def quality_eda(x=None, methods=['bottcher'], sampling_rate=None, verbose=1):
+def quality_eda(x=None, methods=None, sampling_rate=None, verbose=1):
     """Compute the quality index for one EDA segment.
 
         Parameters
@@ -48,15 +48,20 @@ def quality_eda(x=None, methods=['bottcher'], sampling_rate=None, verbose=1):
     
     if sampling_rate is None:
         raise TypeError("Please specify the sampling rate.")
-    
-    assert len(x) > sampling_rate * 2, 'Segment must be 5s long'
+
+    if methods is None:
+        methods = ['bottcher']
+
+    if len(x) <= sampling_rate * 5:
+        raise ValueError('Segment must be longer than 5s')
 
     args, names = (), ()
     available_methods = ['bottcher']
 
     for method in methods:
 
-        assert method in available_methods, "Method should be one of the following: " + ", ".join(available_methods)
+        if method not in available_methods:
+            raise ValueError("Method should be one of the following: " + ", ".join(available_methods))
     
         if method == 'bottcher':
             quality = eda_sqi_bottcher(x, sampling_rate, verbose)
@@ -67,9 +72,9 @@ def quality_eda(x=None, methods=['bottcher'], sampling_rate=None, verbose=1):
     return utils.ReturnTuple(args, names)
 
 
-def quality_ecg(segment, methods=['Level3'], sampling_rate=None, 
-                fisher=True, f_thr=0.01, threshold=0.9, bit=0, 
-                nseg=1024, num_spectrum=[5, 20], dem_spectrum=None, 
+def quality_ecg(segment, methods=None, sampling_rate=None,
+                fisher=True, f_thr=0.01, threshold=0.9, bit=0,
+                nseg=1024, num_spectrum=None, dem_spectrum=None,
                 mode_fsqi='simple', verbose=1):
     
     """Compute the quality index for one ECG segment.
@@ -96,12 +101,18 @@ def quality_ecg(segment, methods=['Level3'], sampling_rate=None,
     names : tuple
         Tuple containing the name of each method.
     """
+    if methods is None:
+        methods = ['Level3']
+    if num_spectrum is None:
+        num_spectrum = [5, 20]
+
     args, names = (), ()
     available_methods = ['Level3', 'pSQI', 'kSQI', 'fSQI', 'cSQI', 'hosSQI']
 
     for method in methods:
 
-        assert method in available_methods, 'Method should be one of the following: ' + ', '.join(available_methods)
+        if method not in available_methods:
+            raise ValueError('Method should be one of the following: ' + ', '.join(available_methods))
 
         if method == 'Level3':
             # returns a SQI level 0, 0.5 or 1.0
@@ -171,9 +182,13 @@ def ecg_sqi_level3(segment, sampling_rate, threshold, bit):
             quality = MQ if (max(hr) <= 200 and min(hr) >= 40) else LQ
         if quality == MQ:
             templates, _ = ecg.extract_heartbeats(signal=segment, rpeaks=rpeak1, sampling_rate=sampling_rate, before=0.2, after=0.4)
-            corr_points = np.corrcoef(templates)
-            if np.mean(corr_points) > threshold:
-                quality = HQ
+            if len(templates) > 1:
+                corr_points = np.corrcoef(templates)
+                # Exclude diagonal (self-correlations = 1.0) to avoid upward bias
+                n = corr_points.shape[0]
+                mask = ~np.eye(n, dtype=bool)
+                if np.mean(corr_points[mask]) > threshold:
+                    quality = HQ
 
     return quality 
 
@@ -208,14 +223,18 @@ def eda_sqi_bottcher(x=None, sampling_rate=None, verbose=1):  # -> Timeline
     if verbose == 1:
         if len(x) < sampling_rate * 60:
             print("This method was designed for a signal of 60s but will be applied to a signal of {}s".format(len(x)/sampling_rate))
-    # create segments of 2 seconds
-    segments_2s = x.reshape(-1, int(sampling_rate*2))
+    # create segments of 2 seconds (truncate to nearest multiple of window size)
+    window_size = int(sampling_rate * 2)
+    n_samples = len(x) - (len(x) % window_size)
+    segments_2s = x[:n_samples].reshape(-1, window_size)
     ## compute racSQI for each segment
     # first compute the min and max of each segment
     min_ = np.min(segments_2s, axis=1)
     max_ = np.max(segments_2s, axis=1)
-    # then compute the RAC (max-min)/max
-    rac = np.abs((max_ - min_) / max_)
+    # then compute the RAC (max-min)/max, handling division by zero
+    with np.errstate(divide='ignore', invalid='ignore'):
+        rac = np.abs((max_ - min_) / max_)
+        rac = np.where(np.isfinite(rac), rac, np.inf)
     # ratio will be 1 if the rac is < 0.2 and if the mean of the segment is > 0.05 and will be 0 otherwise
     quality_score = ((rac < 0.2) & (np.mean(segments_2s, axis=1) > 0.05)).astype(int)
     # the final SQI is the average of the scores 
@@ -260,7 +279,7 @@ def cSQI(rpeaks=None, verbose=1):
         else:
             str_level = "Unqualified"
 
-        print('cSQI is {:.2f} -> {str_level}'.format(cSQI, str_level= str_level))
+        print('cSQI is {:.2f} -> {}'.format(cSQI, str_level))
         print('-------------------------------------------------------') 
     
     return cSQI
@@ -295,13 +314,13 @@ def hosSQI(signal=None, quantitative=False, verbose=1):
 
     kSQI = stats.kurtosis(signal)
     sSQI = stats.skew(signal)
-    print('kurtosis: ', kSQI)
-    print('skewness: ', sSQI)
 
     hosSQI = abs(sSQI) * kSQI / 5
 
     if verbose == 1:
-        print('-------------------------------------------------------') 
+        print('kurtosis: ', kSQI)
+        print('skewness: ', sSQI)
+        print('-------------------------------------------------------')
         print('hosSQI Advice (remove this by setting verbose=0) -> The signal must be at least 5s long and should be filtered before applying this function.')
         print('hosSQI is a measure without an upper limit.')
         if hosSQI > 0.8:
@@ -310,7 +329,7 @@ def hosSQI(signal=None, quantitative=False, verbose=1):
             str_level = "Acceptable"
         else:
             str_level = "Unacceptable"
-        print('hosSQI is {:.2f} -> {str_level}'.format(hosSQI, str_level= str_level))
+        print('hosSQI is {:.2f} -> {}'.format(hosSQI, str_level))
         print('-------------------------------------------------------') 
     
     return hosSQI

@@ -681,6 +681,22 @@ def hrv_nonlinear(rri=None, duration=None, detrend_rri=True, show=False):
         appen = approximate_entropy(rri)
         out = out.append(appen, 'appen')
 
+    # compute DFA alpha1 and alpha2
+    if len(rri) >= 64:
+        try:
+            dfa_out = dfa_alpha(rri=rri)
+            out = out.join(dfa_out)
+        except (ValueError, Exception):
+            pass
+
+    # compute fragmentation indices
+    if len(rri) >= 4:
+        try:
+            frag_out = hrv_fragmentation(rri=rri)
+            out = out.join(frag_out)
+        except (ValueError, Exception):
+            pass
+
     return out
 
 
@@ -1271,12 +1287,6 @@ def heart_rate_turbulence(rri=None, vpc_indices=None, coupling_interval_min=300,
     following ventricular premature complexes (VPCs). The main parameters are:
     - Turbulence Onset (TO): Initial acceleration of heart rate after VPC
     - Turbulence Slope (TS): Subsequent deceleration of heart rate
-def hht_variability(rri=None, method='ceemdan', num_ensemble=100, noise_std=0.2,
-                   max_imf=None, max_iter=1000, sampling_rate=4.0, random_seed=None):
-    """Compute HRV features using Hilbert-Huang Transform (HHT).
-
-    Decomposes RR-intervals using CEEMDAN and extracts variability features
-    from each Intrinsic Mode Function (IMF).
 
     Parameters
     ----------
@@ -1440,6 +1450,74 @@ def hht_variability(rri=None, method='ceemdan', num_ensemble=100, noise_std=0.2,
 def _detect_vpcs(rri, coupling_interval_min=300, coupling_interval_max=2000,
                  prematurity_threshold=0.8, compensatory_pause_threshold=1.2):
     """Detects ventricular premature complexes (VPCs) in RRI sequence.
+
+    Parameters
+    ----------
+    rri : array
+        RR-intervals (ms).
+    coupling_interval_min : float
+        Minimum coupling interval (ms).
+    coupling_interval_max : float
+        Maximum coupling interval (ms).
+    prematurity_threshold : float
+        Prematurity criterion threshold.
+    compensatory_pause_threshold : float
+        Compensatory pause criterion threshold.
+
+    Returns
+    -------
+    vpc_indices : array
+        Indices of detected VPCs.
+    """
+
+    vpc_indices = []
+
+    # compute local average using sliding window
+    window_size = 5
+    local_avg = np.convolve(rri, np.ones(window_size)/window_size, mode='same')
+
+    for i in range(1, len(rri) - 1):
+        # get current and next RR interval
+        rr_current = rri[i]
+        rr_next = rri[i + 1]
+
+        # check coupling interval range
+        if rr_current < coupling_interval_min or rr_current > coupling_interval_max:
+            continue
+
+        # check prematurity criterion
+        # VPC coupling interval should be shorter than local average
+        if rr_current > prematurity_threshold * local_avg[i]:
+            continue
+
+        # check compensatory pause criterion
+        # Post-VPC interval should be longer than local average
+        if rr_next < compensatory_pause_threshold * local_avg[i]:
+            continue
+
+        # check that it's not part of a couplet or run
+        # (i.e., previous interval should be normal)
+        if i > 1:
+            rr_prev = rri[i - 1]
+            if rr_prev < prematurity_threshold * local_avg[i - 1]:
+                continue
+
+        vpc_indices.append(i)
+
+    return np.array(vpc_indices, dtype=int)
+
+
+def hht_variability(rri=None, method='ceemdan', num_ensemble=100, noise_std=0.2,
+                   max_imf=None, max_iter=1000, sampling_rate=4.0, random_seed=None):
+    """Compute HRV features using Hilbert-Huang Transform (HHT).
+
+    Decomposes RR-intervals using CEEMDAN and extracts variability features
+    from each Intrinsic Mode Function (IMF).
+
+    Parameters
+    ----------
+    rri : array
+        RR-intervals (ms).
     method : str, optional
         Decomposition method: 'emd', 'eemd', or 'ceemdan'. Default: 'ceemdan'.
     num_ensemble : int, optional
@@ -1571,60 +1649,6 @@ def hht_frequency_bands(rri=None, method='ceemdan', fbands=None, num_ensemble=10
     ----------
     rri : array
         RR-intervals (ms).
-    coupling_interval_min : float
-        Minimum coupling interval (ms).
-    coupling_interval_max : float
-        Maximum coupling interval (ms).
-    prematurity_threshold : float
-        Prematurity criterion threshold.
-    compensatory_pause_threshold : float
-        Compensatory pause criterion threshold.
-
-    Returns
-    -------
-    vpc_indices : array
-        Indices of detected VPCs.
-    """
-
-    vpc_indices = []
-
-    # compute local average using sliding window
-    window_size = 5
-    local_avg = np.convolve(rri, np.ones(window_size)/window_size, mode='same')
-
-    for i in range(1, len(rri) - 1):
-        # get current and next RR interval
-        rr_current = rri[i]
-        rr_next = rri[i + 1]
-
-        # check coupling interval range
-        if rr_current < coupling_interval_min or rr_current > coupling_interval_max:
-            continue
-
-        # check prematurity criterion
-        # VPC coupling interval should be shorter than local average
-        if rr_current > prematurity_threshold * local_avg[i]:
-            continue
-
-        # check compensatory pause criterion
-        # Post-VPC interval should be longer than local average
-        if rr_next < compensatory_pause_threshold * local_avg[i]:
-            continue
-
-        # check that it's not part of a couplet or run
-        # (i.e., previous interval should be normal)
-        if i > 1:
-            rr_prev = rri[i - 1]
-            if rr_prev < prematurity_threshold * local_avg[i - 1]:
-                continue
-
-        vpc_indices.append(i)
-
-    return np.array(vpc_indices, dtype=int)
-
-
-def _plot_hrt(rri, vpc_indices, to, ts):
-    """Plots Heart Rate Turbulence analysis results.
     method : str, optional
         Decomposition method: 'emd', 'eemd', or 'ceemdan'. Default: 'ceemdan'.
     fbands : dict, optional
@@ -1644,13 +1668,13 @@ def _plot_hrt(rri, vpc_indices, to, ts):
     Returns
     -------
     vlf_power : float
-        Very Low Frequency power (ms²).
+        Very Low Frequency power (ms^2).
     lf_power : float
-        Low Frequency power (ms²).
+        Low Frequency power (ms^2).
     hf_power : float
-        High Frequency power (ms²).
+        High Frequency power (ms^2).
     total_power : float
-        Total power (ms²).
+        Total power (ms^2).
     lf_hf_ratio : float
         LF/HF ratio.
     vlf_norm : float
@@ -1749,12 +1773,8 @@ def _plot_hrt(rri, vpc_indices, to, ts):
     return utils.ReturnTuple(args, names)
 
 
-def hht_nonlinear_features(rri=None, method='ceemdan', num_ensemble=100,
-                          noise_std=0.2, max_imf=None, sampling_rate=4.0,
-                          random_seed=None):
-    """Compute non-linear HRV features using HHT.
-
-    Extracts complexity and entropy measures from IMF decomposition.
+def _plot_hrt(rri, vpc_indices, to, ts):
+    """Plots Heart Rate Turbulence analysis results.
 
     Parameters
     ----------
@@ -1809,6 +1829,272 @@ def hht_nonlinear_features(rri=None, method='ceemdan', num_ensemble=100,
     else:
         warnings.warn("Could not generate HRT plot. No valid VPCs with "
                      "sufficient surrounding intervals.")
+
+
+def hrv_fragmentation(rri=None):
+    """Compute Heart Rate Fragmentation indices from RR intervals.
+
+    Fragmentation indices quantify the "erratic" nature of heart rate
+    dynamics independently of HRV magnitude. They capture short-term
+    irregularities (inflection points, alternations) that entropy measures
+    may miss.
+
+    Parameters
+    ----------
+    rri : array
+        RR-intervals (ms).
+
+    Returns
+    -------
+    pip : float
+        PIP - Percentage of Inflection Points. An inflection point occurs
+        when the sign of successive RRI differences changes.
+    ials : float
+        IALS - Inverse of the Average Length of Acceleration/Deceleration
+        Segments. Higher values indicate more fragmented heart rate.
+    pss : float
+        PSS - Percentage of Short Segments (length < 3 intervals).
+    pas : float
+        PAS - Percentage of Alternating Segments. Percentage of segments
+        that are part of alternation patterns (>= 4 consecutive
+        sign-alternating increments).
+
+    References
+    ----------
+    Costa MD, Davis RB, Goldberger AL. Heart Rate Fragmentation: A New
+    Approach to the Analysis of Cardiac Interbeat Interval Dynamics.
+    Front Physiol. 2017;8:255. doi:10.3389/fphys.2017.00255
+
+    Notes
+    -----
+    * PIP is the most basic fragmentation metric.
+    * IALS captures the average segment length (inverted).
+    * PSS and PAS focus on very short and alternating segments.
+    * These indices are independent of HRV magnitude (SDNN, RMSSD).
+    * Higher fragmentation values are associated with aging and disease.
+    """
+
+    # check inputs
+    if rri is None:
+        raise TypeError("Please specify an RRI list or array.")
+
+    rri = np.array(rri, dtype=float)
+
+    if len(rri) < 4:
+        raise ValueError("Need at least 4 RR intervals for fragmentation.")
+
+    # compute successive differences
+    diff_rri = np.diff(rri)
+
+    # remove zero differences (treat as no change)
+    # sign: -1 for deceleration, +1 for acceleration, 0 for no change
+    signs = np.sign(diff_rri)
+
+    # PIP: Percentage of Inflection Points
+    # An inflection point at index i means sign(diff[i]) != sign(diff[i-1])
+    sign_changes = np.diff(signs)
+    n_inflections = np.sum(sign_changes != 0)
+    pip = 100.0 * n_inflections / (len(signs) - 1)
+
+    # Segment analysis: identify runs of same non-zero sign differences
+    # A segment is a consecutive run of differences with the same non-zero sign
+    # Zero-sign differences break segments but are not counted as segments
+    segments = []
+    current_len = 0
+    current_sign = 0
+
+    for s in signs:
+        if s != 0 and s == current_sign:
+            current_len += 1
+        else:
+            if current_len > 0:
+                segments.append(current_len)
+            if s != 0:
+                current_sign = s
+                current_len = 1
+            else:
+                current_sign = 0
+                current_len = 0
+    if current_len > 0:
+        segments.append(current_len)
+
+    segments = np.array(segments)
+
+    # IALS: Inverse of Average Length of Acceleration/Deceleration Segments
+    if len(segments) > 0:
+        avg_len = np.mean(segments)
+        ials = 1.0 / avg_len if avg_len > 0 else np.inf
+    else:
+        ials = np.inf
+
+    # PSS: Percentage of Short Segments (length < 3, per Costa 2017)
+    if len(segments) > 0:
+        n_short = np.sum(segments < 3)
+        pss = 100.0 * n_short / len(segments)
+    else:
+        pss = 0.0
+
+    # PAS: Percentage of Alternating Segments
+    # Costa 2017: an alternation pattern requires >= 4 consecutive
+    # sign-alternating increments (i.e., runs of consecutive segments
+    # each of length 1). We count runs of >= 4 consecutive length-1 segments.
+    n_alternating = 0
+    n_total_segments = len(segments)
+    if n_total_segments > 0:
+        consec_ones = 0
+        for seg_len in segments:
+            if seg_len == 1:
+                consec_ones += 1
+            else:
+                if consec_ones >= 4:
+                    n_alternating += consec_ones
+                consec_ones = 0
+        # handle trailing run
+        if consec_ones >= 4:
+            n_alternating += consec_ones
+        pas = 100.0 * n_alternating / n_total_segments
+    else:
+        pas = 0.0
+
+    # output
+    out = utils.ReturnTuple(
+        (pip, ials, pss, pas),
+        ('pip', 'ials', 'pss', 'pas')
+    )
+
+    return out
+
+
+def dfa_alpha(rri=None, short_range=(4, 16), long_range=(17, 64), n_wins=20):
+    """Compute DFA alpha1 and alpha2 scaling exponents from RR intervals.
+
+    DFA alpha1 (short-term) and alpha2 (long-term) are among the most
+    clinically validated nonlinear HRV features. alpha1 captures short-range
+    fractal correlations (4-16 beats), while alpha2 captures long-range
+    correlations (16-64 beats).
+
+    Parameters
+    ----------
+    rri : array
+        RR-intervals (ms).
+    short_range : tuple, optional
+        Window size range for alpha1 (min, max). Default: (4, 16).
+    long_range : tuple, optional
+        Window size range for alpha2 (min, max). Default: (17, 64).
+    n_wins : int, optional
+        Number of window sizes per range. Default: 20.
+
+    Returns
+    -------
+    alpha1 : float
+        Short-term DFA scaling exponent (4-16 beats).
+    alpha2 : float
+        Long-term DFA scaling exponent (16-64 beats).
+    alpha_total : float
+        Overall DFA scaling exponent.
+
+    References
+    ----------
+    Peng CK, Havlin S, Stanley HE, Goldberger AL. Quantification of scaling
+    exponents and crossover phenomena in nonstationary heartbeat time series.
+    Chaos. 1995;5(1):82-87.
+
+    Notes
+    -----
+    * alpha1 ~ 1.0: healthy fractal-like heart rate dynamics.
+    * alpha1 < 0.65: loss of short-range correlations (heart failure, aging).
+    * alpha1 > 1.5: strong short-range correlations.
+    * alpha1 is a strong predictor of mortality post-MI.
+    * alpha2 reflects long-range regulation.
+    """
+
+    # check inputs
+    if rri is None:
+        raise TypeError("Please specify an RRI list or array.")
+
+    rri = np.array(rri, dtype=float)
+
+    if len(rri) < long_range[1]:
+        raise ValueError(
+            f"Need at least {long_range[1]} RR intervals for DFA alpha2. "
+            f"Got {len(rri)}."
+        )
+
+    # integrate the signal (cumulative sum of deviations from mean)
+    y = np.cumsum(rri - np.mean(rri))
+    N = len(y)
+
+    def _compute_alpha(win_min, win_max, n_w):
+        """Compute DFA scaling exponent for a specific window range."""
+        window_sizes = np.unique(
+            np.logspace(np.log10(win_min), np.log10(min(win_max, N // 4)),
+                        n_w, dtype=int)
+        )
+        # filter valid window sizes
+        window_sizes = window_sizes[window_sizes >= 4]
+
+        if len(window_sizes) < 2:
+            return np.nan
+
+        fluctuations = []
+        for win_size in window_sizes:
+            n_segments = N // win_size
+            if n_segments < 1:
+                continue
+
+            f_vals = np.zeros(n_segments)
+            for i in range(n_segments):
+                segment = y[i * win_size:(i + 1) * win_size]
+                x = np.arange(len(segment))
+                coeffs = np.polyfit(x, segment, 1)
+                trend = np.polyval(coeffs, x)
+                f_vals[i] = np.sqrt(np.mean((segment - trend) ** 2))
+
+            fluctuations.append(np.sqrt(np.mean(f_vals ** 2)))
+
+        fluctuations = np.array(fluctuations)
+        valid_sizes = window_sizes[:len(fluctuations)]
+
+        # remove zero or negative fluctuations
+        valid = fluctuations > 0
+        if np.sum(valid) < 2:
+            return np.nan
+
+        coeffs = np.polyfit(
+            np.log10(valid_sizes[valid]),
+            np.log10(fluctuations[valid]), 1
+        )
+        return coeffs[0]
+
+    # compute alpha1 (short-term)
+    alpha1 = _compute_alpha(short_range[0], short_range[1], n_wins)
+
+    # compute alpha2 (long-term)
+    alpha2 = _compute_alpha(long_range[0], long_range[1], n_wins)
+
+    # compute total alpha
+    alpha_total = _compute_alpha(short_range[0], long_range[1], n_wins * 2)
+
+    # output
+    out = utils.ReturnTuple(
+        (alpha1, alpha2, alpha_total),
+        ('alpha1', 'alpha2', 'alpha_total')
+    )
+
+    return out
+
+
+def hht_nonlinear_features(rri=None, method='ceemdan', num_ensemble=100,
+                          noise_std=0.2, max_imf=None, sampling_rate=4.0,
+                          random_seed=None):
+    """Compute non-linear HRV features using HHT.
+
+    Extracts complexity and entropy measures from IMF decomposition.
+
+    Parameters
+    ----------
+    rri : array
+        RR-intervals (ms).
     method : str, optional
         Decomposition method. Default: 'ceemdan'.
     num_ensemble : int, optional

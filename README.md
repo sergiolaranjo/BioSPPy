@@ -16,37 +16,27 @@
 [![GitHub issues](https://badgen.net/github/open-issues/scientisst/BioSPPy?color=cyan)](https://github.com/scientisst/BioSPPy/issues)
 
 
-### 🎙️ Announcements
-```
-🗒️ BioSPPy can now read EDF files directly! 
-With the biosppy.storage module you can now load your EDF files!
-```
-```
-🌀 New module for signal quality assessment 🌀
-With the biosppy.quality module you can now evaluate the quality of your signals!
-So far, the EDA and ECG quality are available, but more could be added soon. 
-```
-```
-🫀 New module for heart rate variability (biosppy.signals.hrv)
-🎊 New module for feature extraction (biosppy.features)
-```
-
-
 # BioSPPy - Biosignal Processing in Python
-The toolbox bundles together various signal processing and pattern recognition
-methods geared towards the analysis of biosignals.
 
-Highlights:
+BioSPPy is a toolbox for biosignal processing written in Python. It bundles together various signal processing and pattern recognition methods geared towards the analysis of biosignals.
 
-- Support for various biosignals: ECG, EDA, EEG, EMG, PCG, PPG, Respiration, HRV
-- Signal analysis primitives: filtering, frequency analysis
-- Feature extraction: time, frequency, and non-linear domain
-- Signal quality assessment
-- Signal synthesizers
-- Clustering
-- Biometrics
+## Highlights
 
-Documentation can be found at: <https://biosppy.readthedocs.org/>
+- **Signal Processing**: ECG, EDA, EEG, EMG, PCG, PPG, ABP, BVP, Respiration, Accelerometry
+- **Heart Rate Variability**: Time-domain, frequency-domain, and nonlinear HRV analysis
+- **Feature Extraction**: Time, frequency, cepstral, phase-space, and wavelet coherence domains
+- **Signal Quality Assessment**: Automated quality evaluation for EDA and ECG
+- **Nonlinear Dynamics**: Entropy measures (Shannon, sample, approximate, multiscale), fractal dimensions (Higuchi, Katz, correlation dimension), Lyapunov exponents, and recurrence analysis
+- **Empirical Mode Decomposition**: EMD, EEMD, and CEEMDAN with Hilbert spectral analysis
+- **Baroreflex Sensitivity**: Sequential method (Di Rienzo) with multi-lag analysis
+- **Multichannel Analysis**: Synchronized multi-signal import and analysis
+- **Dimensionality Reduction**: PCA, ICA, NMF, t-SNE, MDS, Isomap, and UMAP
+- **Clustering**: K-Means, DBSCAN, Gaussian Mixture Models, and hierarchical clustering
+- **Biometrics**: ECG-based biometric identification
+- **Signal Synthesizers**: Generate synthetic biosignals for testing and development
+- **Storage**: Load signals from TXT, HDF5, EDF, WFDB, and BioSig formats
+
+Documentation: <https://biosppy.readthedocs.org/>
 
 ## Installation
 
@@ -56,16 +46,15 @@ Installation can be easily done with `pip`:
 $ pip install biosppy
 ```
 
-Alternatively, you can install the latest version from the GitHub repository:
+Alternatively, install the latest development version from GitHub:
 
 ```bash
 $ pip install git+https://github.com/scientisst/BioSPPy.git
 ```
 
-## Simple Example
+## Quick Start
 
-The code below loads an ECG signal from the `examples` folder, filters it,
-performs R-peak detection, and computes the instantaneous heart rate.
+### ECG Processing
 
 ```python
 from biosppy import storage
@@ -76,25 +65,108 @@ signal, mdata = storage.load_txt('./examples/ecg.txt')
 
 # process it and plot
 out = ecg.ecg(signal=signal, sampling_rate=1000., show=True)
-```
 
-This should produce a plot similar to the one below.
+# access results
+print("R-peak indices:", out['rpeaks'])
+print("Heart rate:", out['heart_rate'])
+```
 
 ![ECG summary example](docs/images/ECG_summary.png)
 
+### EDA Processing
+
+```python
+from biosppy import storage
+from biosppy.signals import eda
+
+signal, mdata = storage.load_txt('./examples/eda.txt')
+out = eda.eda(signal=signal, sampling_rate=1000., show=True)
+```
+
+### Heart Rate Variability
+
+```python
+from biosppy.signals import ecg, hrv
+
+# process ECG to get R-peaks
+signal, _ = storage.load_txt('./examples/ecg.txt')
+out = ecg.ecg(signal=signal, sampling_rate=1000., show=False)
+
+# compute HRV from R-peak intervals
+rri = np.diff(out['rpeaks']) / 1000.  # convert to seconds
+hrv_results = hrv.hrv(rri=rri, sampling_rate=1000.)
+```
+
+For a complete usage guide with more examples, see [HOWTO.md](HOWTO.md).
+
+## Supported Signals
+
+| Signal | Module | Description |
+|--------|--------|-------------|
+| ECG | `biosppy.signals.ecg` | Electrocardiography (R-peak detection, heart rate, wave delineation) |
+| EDA | `biosppy.signals.eda` | Electrodermal Activity (SCR detection, tonic/phasic decomposition) |
+| EEG | `biosppy.signals.eeg` | Electroencephalography (band-power extraction) |
+| EMG | `biosppy.signals.emg` | Electromyography (onset detection, activation patterns) |
+| PPG | `biosppy.signals.ppg` | Photoplethysmography (pulse detection, pulse wave analysis) |
+| PCG | `biosppy.signals.pcg` | Phonocardiography (heart sound segmentation) |
+| ABP | `biosppy.signals.abp` | Arterial Blood Pressure (systolic/diastolic detection) |
+| BVP | `biosppy.signals.bvp` | Blood Volume Pulse |
+| Respiration | `biosppy.signals.resp` | Respiratory signal analysis (breath detection, rate) |
+| ACC | `biosppy.signals.acc` | Accelerometry (activity recognition) |
+| HRV | `biosppy.signals.hrv` | Heart Rate Variability (time/frequency/nonlinear) |
+
+## Project Structure
+
+```
+biosppy/
+    signals/          # Signal-specific processing modules
+        ecg.py        # ECG processing and R-peak detection
+        eda.py        # EDA processing and SCR detection
+        eeg.py        # EEG band-power analysis
+        emg.py        # EMG onset detection
+        ppg.py        # PPG processing and pulse wave analysis
+        pcg.py        # PCG heart sound analysis
+        abp.py        # Arterial blood pressure
+        bvp.py        # Blood volume pulse
+        resp.py       # Respiratory signal analysis
+        acc.py        # Accelerometry
+        hrv.py        # Heart rate variability
+        emd.py        # Empirical Mode Decomposition
+        baroreflex.py # Baroreflex sensitivity analysis
+        multichannel.py # Multi-signal synchronized analysis
+        tools.py      # Signal processing primitives
+    features/         # Feature extraction modules
+        time.py       # Time-domain features
+        frequency.py  # Frequency-domain features
+        cepstral.py   # Cepstral features
+        time_freq.py  # Time-frequency features
+        phase_space.py          # Phase-space features
+        wavelet_coherence.py    # Wavelet coherence analysis
+    chaos.py          # Nonlinear dynamics and entropy measures
+    clustering.py     # Clustering algorithms
+    dimensionality_reduction.py  # PCA, t-SNE, UMAP, etc.
+    quality.py        # Signal quality assessment
+    biometrics.py     # ECG-based biometric identification
+    storage.py        # File I/O (TXT, HDF5, EDF, WFDB)
+    plotting.py       # Visualization utilities
+    utils.py          # General utilities
+examples/             # Example scripts and sample data
+```
+
 ## Dependencies
 
+- numpy
+- scipy
+- scikit-learn
+- matplotlib
 - bidict
 - h5py
-- matplotlib
-- numpy
-- scikit-learn
-- scipy
 - shortuuid
 - six
 - joblib
 
 ## Citing
+
 Please use the following if you need to cite BioSPPy:
 
 P. Bota, R. Silva, C. Carreiras, A. Fred, and H. P. da Silva, "BioSPPy: A Python toolbox for physiological signal processing," SoftwareX, vol. 26, pp. 101712, 2024, doi: 10.1016/j.softx.2024.101712.

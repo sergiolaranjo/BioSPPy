@@ -47,7 +47,7 @@ def serialize(data, path, compress=3):
     """
 
     # normalize path
-    utils.normpath(path)
+    path = utils.normpath(path)
 
     joblib.dump(data, path, compress=compress)
 
@@ -222,7 +222,7 @@ def alloc_h5(path):
     # normalize path
     path = utils.normpath(path)
 
-    with h5py.File(path):
+    with h5py.File(path, 'w'):
         pass
 
 
@@ -243,7 +243,7 @@ def store_h5(path, label, data):
     # normalize path
     path = utils.normpath(path)
 
-    with h5py.File(path) as fid:
+    with h5py.File(path, 'a') as fid:
         label = str(label)
 
         try:
@@ -357,7 +357,7 @@ def store_txt(path, data, sampling_rate=1000., resolution=None, date=None,
     p = '%d' % precision
     if np.issubdtype(data.dtype, np.integer):
         fmt = '%d'
-    elif np.issubdtype(data.dtype, np.float):
+    elif np.issubdtype(data.dtype, np.floating):
         fmt = '%%.%sf' % p
     elif np.issubdtype(data.dtype, np.bool_):
         fmt = '%d'
@@ -561,7 +561,7 @@ def load_edf(path):
                         signals[i].append(struct.unpack('<h', f.read(2))[0])
 
         # Scale the signals into physical units
-        for i in range(num_signals-1):
+        for i in range(num_signals):
             signals[i] = np.array(signals[i])
             signals[i] = (signals[i] - digital_min[i]) / (digital_max[i] - digital_min[i]) * (physical_max[i] - physical_min[i]) + physical_min[i]
 
@@ -842,7 +842,7 @@ def load_biosig(path, channel=None):
         try:
             # T0 is typically in a specific format, try to parse it
             mdata['start_datetime'] = hdr.T0
-        except:
+        except Exception:
             mdata['start_datetime'] = None
     else:
         mdata['start_datetime'] = None

@@ -108,7 +108,8 @@ class TestSequenceMethod(unittest.TestCase):
         np.random.seed(42)
 
         # Create data with clear sequences
-        n_beats = 50
+        # Use fewer points so per-step changes exceed the default threshold (1.0)
+        n_beats = 20
 
         # First half: increasing sequence
         sbp_up = np.linspace(110, 130, n_beats // 2)

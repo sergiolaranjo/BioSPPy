@@ -304,17 +304,20 @@ def recurrence_plot_features(rec_matrix=None):
 
     # longest diagonal line length
     i_ll = np.sign(diag_freq)
-    rec_plot_lgst_diag_line_len = np.where(i_ll == 1)[0][-1]
+    idx = np.where(i_ll == 1)[0]
+    rec_plot_lgst_diag_line_len = idx[-1] if len(idx) > 0 else 0
     feats = feats.append(rec_plot_lgst_diag_line_len, 'rec_plot_lgst_diag_line_len')
 
     # longest vertical line length
     i_ll = np.sign(vert_freq)
-    rec_plot_lgst_vert_line_len = np.where(i_ll == 1)[0][-1]
+    idx = np.where(i_ll == 1)[0]
+    rec_plot_lgst_vert_line_len = idx[-1] if len(idx) > 0 else 0
     feats = feats.append(rec_plot_lgst_vert_line_len, 'rec_plot_lgst_vert_line_len')
 
     # longest white vertical line length
     i_ll = np.sign(white_vert_freq)
-    rec_plot_lgst_white_vert_line_len = np.where(i_ll == 1)[0][-1]
+    idx = np.where(i_ll == 1)[0]
+    rec_plot_lgst_white_vert_line_len = idx[-1] if len(idx) > 0 else 0
     feats = feats.append(rec_plot_lgst_white_vert_line_len, 'rec_plot_lgst_white_vert_line_len')
 
     # entropy of diagonal lines

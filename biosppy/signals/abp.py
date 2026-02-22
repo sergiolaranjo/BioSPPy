@@ -23,7 +23,7 @@ from . import tools as st
 from .. import plotting, utils
 
 
-def abp(signal=None, sampling_rate=1000.0, show=True):
+def abp(signal=None, sampling_rate=1000.0, units=None, path=None, show=True):
     """Process a raw ABP signal and extract relevant signal features using
     default parameters.
 
@@ -33,6 +33,11 @@ def abp(signal=None, sampling_rate=1000.0, show=True):
         Raw ABP signal.
     sampling_rate : int, float, optional
         Sampling frequency (Hz).
+    units : str, optional
+        The units of the input signal. If specified, the plot will have the
+        y-axis labeled with the corresponding units.
+    path : str, optional
+        If provided, the plot will be saved to the specified file.
     show : bool, optional
         If True, show a summary plot.
 
@@ -81,7 +86,7 @@ def abp(signal=None, sampling_rate=1000.0, show=True):
     # get time vectors
     length = len(signal)
     T = (length - 1) / sampling_rate
-    ts = np.linspace(0, T, length, endpoint=False)
+    ts = np.linspace(0, T, length, endpoint=True)
     ts_hr = ts[hr_idx]
 
     # plot
@@ -93,7 +98,7 @@ def abp(signal=None, sampling_rate=1000.0, show=True):
             onsets=onsets,
             heart_rate_ts=ts_hr,
             heart_rate=hr,
-            path=None,
+            path=path,
             show=True,
         )
 

@@ -159,7 +159,7 @@ class ImportDialog(tk.Toplevel):
                         col = int(self.column_entry.get())
                         if signal.ndim > 1:
                             signal = signal[:, col]
-                    except:
+                    except Exception:
                         pass
 
             elif ext == '.edf':
