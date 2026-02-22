@@ -642,8 +642,8 @@ def higuchi_fd(signal=None, k_max=10):
             for i in range(len(indices) - 1):
                 Lm += np.abs(signal[indices[i + 1]] - signal[indices[i]])
 
-            # normalize
-            Lm = Lm * (N - 1) / (((len(indices) - 1) * k))
+            # normalize (Higuchi 1988: includes 1/k normalization factor)
+            Lm = Lm * (N - 1) / (((len(indices) - 1) * k * k))
             Lk.append(Lm)
 
         lengths[k - 1] = np.mean(Lk) if Lk else 0
