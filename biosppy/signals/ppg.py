@@ -19,6 +19,7 @@ import numpy as np
 import scipy.signal as ss
 import matplotlib.pyplot as plt
 from scipy.stats import gaussian_kde
+from scipy.interpolate import interp1d
 
 # local
 from . import tools as st
@@ -569,5 +570,560 @@ def _extract_templates(signal=None,
     # output
     args = (templates_ts, templates)
     names = ('templates_ts', 'templates')
+
+    return utils.ReturnTuple(args, names)
+
+
+def find_systolic_peaks(signal=None, sampling_rate=1000., min_delay=0.3):
+    """Detect systolic peaks in a filtered PPG signal.
+
+    Parameters
+    ----------
+    signal : array
+        Filtered PPG signal.
+    sampling_rate : int, float, optional
+        Sampling frequency (Hz).
+    min_delay : float, optional
+        Minimum delay between peaks in seconds. Default: 0.3.
+
+    Returns
+    -------
+    peaks : array
+        Indices of systolic peaks.
+    """
+
+    if signal is None:
+        raise TypeError("Please specify an input signal.")
+
+    signal = np.array(signal, dtype=float)
+    sampling_rate = float(sampling_rate)
+
+    min_distance = int(min_delay * sampling_rate)
+    if min_distance < 1:
+        min_distance = 1
+
+    peaks, _ = ss.find_peaks(signal, distance=min_distance,
+                             height=np.mean(signal))
+
+    args = (peaks,)
+    names = ('peaks',)
+    return utils.ReturnTuple(args, names)
+
+
+def find_dicrotic_notch(signal=None, peaks=None, onsets=None,
+                        sampling_rate=1000.):
+    """Detect dicrotic notch locations in PPG pulse waveforms.
+
+    The dicrotic notch is the small dip following the systolic peak,
+    marking the closure of the aortic valve. It separates the systolic
+    and diastolic phases of the pulse wave.
+
+    Parameters
+    ----------
+    signal : array
+        Filtered PPG signal.
+    peaks : array
+        Indices of systolic peaks.
+    onsets : array
+        Indices of pulse onsets.
+    sampling_rate : int, float, optional
+        Sampling frequency (Hz).
+
+    Returns
+    -------
+    dicrotic_notches : array
+        Indices of dicrotic notch locations.
+    dicrotic_peaks : array
+        Indices of diastolic (dicrotic) peaks following the notch.
+
+    Notes
+    -----
+    * The dicrotic notch is detected as the local minimum between the
+      systolic peak and the next onset.
+    * The dicrotic peak is the local maximum following the notch.
+    * If no clear notch is found, -1 is used for that pulse.
+
+    References
+    ----------
+    Elgendi M. On the analysis of fingertip photoplethysmogram signals.
+    Curr Cardiol Rev. 2012;8(1):14-25.
+    """
+
+    if signal is None or peaks is None or onsets is None:
+        raise TypeError("Please specify signal, peaks, and onsets.")
+
+    signal = np.array(signal, dtype=float)
+    peaks = np.array(peaks, dtype=int)
+    onsets = np.array(onsets, dtype=int)
+
+    dicrotic_notches = []
+    dicrotic_peaks = []
+
+    for i in range(len(peaks)):
+        peak_idx = peaks[i]
+
+        # find the next onset after this peak
+        next_onsets = onsets[onsets > peak_idx]
+        if len(next_onsets) == 0:
+            dicrotic_notches.append(-1)
+            dicrotic_peaks.append(-1)
+            continue
+
+        next_onset = next_onsets[0]
+
+        # search for dicrotic notch between peak and next onset
+        segment = signal[peak_idx:next_onset]
+        if len(segment) < 3:
+            dicrotic_notches.append(-1)
+            dicrotic_peaks.append(-1)
+            continue
+
+        # find local minima in the segment
+        local_mins, _ = ss.find_peaks(-segment)
+
+        if len(local_mins) > 0:
+            # take the first prominent local minimum as the dicrotic notch
+            notch_rel = local_mins[0]
+            notch_idx = peak_idx + notch_rel
+            dicrotic_notches.append(notch_idx)
+
+            # find dicrotic peak: local max after the notch
+            after_notch = signal[notch_idx:next_onset]
+            if len(after_notch) > 1:
+                local_maxs, _ = ss.find_peaks(after_notch)
+                if len(local_maxs) > 0:
+                    dpeak_idx = notch_idx + local_maxs[0]
+                    dicrotic_peaks.append(dpeak_idx)
+                else:
+                    dicrotic_peaks.append(-1)
+            else:
+                dicrotic_peaks.append(-1)
+        else:
+            dicrotic_notches.append(-1)
+            dicrotic_peaks.append(-1)
+
+    dicrotic_notches = np.array(dicrotic_notches, dtype=int)
+    dicrotic_peaks = np.array(dicrotic_peaks, dtype=int)
+
+    args = (dicrotic_notches, dicrotic_peaks)
+    names = ('dicrotic_notches', 'dicrotic_peaks')
+
+    return utils.ReturnTuple(args, names)
+
+
+def sdppg(signal=None, sampling_rate=1000., peaks=None, onsets=None):
+    """Compute the Second Derivative of the PPG (SDPPG) and extract
+    a, b, c, d, e wave features.
+
+    The SDPPG (also called Acceleration Plethysmogram, APG) is widely used
+    for vascular aging assessment. The a, b, c, d, e waves are characteristic
+    peaks/troughs of the SDPPG waveform.
+
+    Parameters
+    ----------
+    signal : array
+        Filtered PPG signal.
+    sampling_rate : int, float, optional
+        Sampling frequency (Hz).
+    peaks : array, optional
+        Indices of systolic peaks. If None, detected automatically.
+    onsets : array, optional
+        Indices of pulse onsets. If None, detected automatically.
+
+    Returns
+    -------
+    sdppg_signal : array
+        Second derivative of the PPG signal.
+    a_waves : array
+        Amplitudes of 'a' waves (initial positive peak, corresponds to
+        early systolic positive wave).
+    b_waves : array
+        Amplitudes of 'b' waves (early systolic negative wave).
+    c_waves : array
+        Amplitudes of 'c' waves (late systolic re-increasing wave).
+    d_waves : array
+        Amplitudes of 'd' waves (late systolic decreasing wave).
+    e_waves : array
+        Amplitudes of 'e' waves (early diastolic positive wave).
+    aging_index : array
+        Vascular aging index per pulse: (b - c - d - e) / a.
+    aging_index_mean : float
+        Mean vascular aging index.
+
+    References
+    ----------
+    Takazawa K, Tanaka N, Fujita M, et al. Assessment of vasoactive agents
+    and vascular aging by the second derivative of the photoplethysmogram
+    waveform. Hypertension. 1998;32(2):365-370.
+
+    Notes
+    -----
+    * The aging index increases with age and arterial stiffness.
+    * Typical aging index ranges: -0.8 to 0.2 for healthy subjects.
+    * Higher values indicate stiffer arteries.
+    * The 'a' wave is always positive, 'b' is negative, c/d/e vary.
+    """
+
+    if signal is None:
+        raise TypeError("Please specify an input signal.")
+
+    signal = np.array(signal, dtype=float)
+    sampling_rate = float(sampling_rate)
+
+    # compute second derivative
+    # smooth slightly first to reduce noise amplification
+    dt = 1.0 / sampling_rate
+    first_deriv = np.gradient(signal, dt)
+    sdppg_signal = np.gradient(first_deriv, dt)
+
+    # detect peaks and onsets if not provided
+    if peaks is None or onsets is None:
+        det = find_onsets_elgendi2013(signal=signal,
+                                      sampling_rate=sampling_rate)
+        if onsets is None:
+            onsets = det['onsets']
+        if peaks is None:
+            # find peaks between onsets
+            peaks_list = []
+            for i in range(len(onsets) - 1):
+                segment = signal[onsets[i]:onsets[i + 1]]
+                if len(segment) > 0:
+                    peaks_list.append(onsets[i] + np.argmax(segment))
+            peaks = np.array(peaks_list, dtype=int)
+
+    # extract a, b, c, d, e waves for each pulse
+    a_waves = []
+    b_waves = []
+    c_waves = []
+    d_waves = []
+    e_waves = []
+
+    for i in range(len(onsets) - 1):
+        onset = onsets[i]
+        next_onset = onsets[i + 1]
+
+        # find the peak within this pulse
+        pulse_peaks = peaks[(peaks >= onset) & (peaks < next_onset)]
+        if len(pulse_peaks) == 0:
+            continue
+
+        peak = pulse_peaks[0]
+
+        # extract SDPPG for this pulse (onset to next onset)
+        pulse_sdppg = sdppg_signal[onset:next_onset]
+        if len(pulse_sdppg) < 5:
+            continue
+
+        # find the 'a' wave: first positive peak of SDPPG in early systole
+        # (within onset to systolic peak)
+        systolic_sdppg = sdppg_signal[onset:peak]
+        if len(systolic_sdppg) < 2:
+            continue
+
+        # 'a' wave: max positive peak in early systole
+        a_idx = np.argmax(systolic_sdppg)
+        a_val = systolic_sdppg[a_idx]
+
+        # find subsequent extrema after the 'a' wave
+        remaining_sdppg = sdppg_signal[onset + a_idx:next_onset]
+        if len(remaining_sdppg) < 4:
+            continue
+
+        # find local extrema
+        local_maxs, _ = ss.find_peaks(remaining_sdppg)
+        local_mins, _ = ss.find_peaks(-remaining_sdppg)
+
+        # 'b' wave: first minimum after 'a' (negative)
+        if len(local_mins) > 0:
+            b_val = remaining_sdppg[local_mins[0]]
+        else:
+            b_val = np.min(remaining_sdppg)
+
+        # 'c' wave: next maximum after 'b'
+        c_val = 0.0
+        d_val = 0.0
+        e_val = 0.0
+        c_maxs = local_maxs[local_maxs > local_mins[0]] if len(local_mins) > 0 else local_maxs
+        if len(c_maxs) > 0:
+            c_val = remaining_sdppg[c_maxs[0]]
+
+            # 'd' wave: next minimum after 'c'
+            d_mins = local_mins[local_mins > c_maxs[0]] if len(local_mins) > 0 else np.array([])
+            if len(d_mins) > 0:
+                d_val = remaining_sdppg[d_mins[0]]
+
+                # 'e' wave: next maximum after 'd'
+                e_maxs = local_maxs[local_maxs > d_mins[0]]
+                if len(e_maxs) > 0:
+                    e_val = remaining_sdppg[e_maxs[0]]
+
+        a_waves.append(a_val)
+        b_waves.append(b_val)
+        c_waves.append(c_val)
+        d_waves.append(d_val)
+        e_waves.append(e_val)
+
+    a_waves = np.array(a_waves)
+    b_waves = np.array(b_waves)
+    c_waves = np.array(c_waves)
+    d_waves = np.array(d_waves)
+    e_waves = np.array(e_waves)
+
+    # compute aging index: (b - c - d - e) / a
+    valid = a_waves != 0
+    aging_index = np.full(len(a_waves), np.nan)
+    aging_index[valid] = (b_waves[valid] - c_waves[valid] -
+                          d_waves[valid] - e_waves[valid]) / a_waves[valid]
+    aging_index_mean = np.nanmean(aging_index) if len(aging_index) > 0 else np.nan
+
+    args = (sdppg_signal, a_waves, b_waves, c_waves, d_waves, e_waves,
+            aging_index, aging_index_mean)
+    names = ('sdppg_signal', 'a_waves', 'b_waves', 'c_waves', 'd_waves',
+             'e_waves', 'aging_index', 'aging_index_mean')
+
+    return utils.ReturnTuple(args, names)
+
+
+def pulse_wave_analysis(signal=None, sampling_rate=1000., peaks=None,
+                        onsets=None, height=None):
+    """Compute pulse wave analysis (PWA) features from a PPG signal.
+
+    Parameters
+    ----------
+    signal : array
+        Filtered PPG signal.
+    sampling_rate : int, float, optional
+        Sampling frequency (Hz).
+    peaks : array, optional
+        Indices of systolic peaks. If None, detected automatically.
+    onsets : array, optional
+        Indices of pulse onsets. If None, detected automatically.
+    height : float, optional
+        Subject height in meters. Required for Stiffness Index computation.
+
+    Returns
+    -------
+    augmentation_index : float
+        Mean Augmentation Index (AIx). Ratio of augmentation pressure to
+        pulse pressure expressed as percentage.
+    stiffness_index : float
+        Mean Stiffness Index (SI) in m/s. Subject height divided by
+        peak-to-dicrotic-notch time. Requires height parameter.
+    reflection_index : float
+        Mean Reflection Index (RI). Ratio of dicrotic peak amplitude to
+        systolic peak amplitude.
+    crest_time_mean : float
+        Mean crest time (seconds). Time from onset to systolic peak.
+    delta_t_mean : float
+        Mean delta T (seconds). Time from systolic peak to dicrotic notch.
+    pulse_width_mean : float
+        Mean pulse width (seconds). Onset to next onset.
+    pulse_area : array
+        Area under each pulse waveform (arbitrary units).
+
+    References
+    ----------
+    Millasseau SC, Kelly RP, Ritter JM, Chowienczyk PJ. Determination of
+    age-related increases in large artery stiffness by digital pulse contour
+    analysis. Clin Sci. 2002;103(4):371-377.
+
+    Kelly R, Hayward C, Avolio A, O'Rourke M. Noninvasive determination of
+    age-related changes in the human arterial pulse. Circulation.
+    1989;80(6):1652-1659.
+    """
+
+    if signal is None:
+        raise TypeError("Please specify an input signal.")
+
+    signal = np.array(signal, dtype=float)
+    sampling_rate = float(sampling_rate)
+
+    # detect landmarks if not provided
+    if peaks is None or onsets is None:
+        det = find_onsets_elgendi2013(signal=signal,
+                                      sampling_rate=sampling_rate)
+        onsets = det['onsets']
+        # find peaks between onsets
+        peaks_list = []
+        for i in range(len(onsets) - 1):
+            segment = signal[onsets[i]:onsets[i + 1]]
+            if len(segment) > 0:
+                peaks_list.append(onsets[i] + np.argmax(segment))
+        peaks = np.array(peaks_list, dtype=int)
+
+    # detect dicrotic notch
+    dn_result = find_dicrotic_notch(signal=signal, peaks=peaks,
+                                     onsets=onsets,
+                                     sampling_rate=sampling_rate)
+    dicrotic_notches = dn_result['dicrotic_notches']
+    dicrotic_peaks_arr = dn_result['dicrotic_peaks']
+
+    # compute features per pulse
+    crest_times = []
+    delta_ts = []
+    pulse_widths = []
+    reflection_indices = []
+    augmentation_indices = []
+    stiffness_indices = []
+    pulse_areas = []
+
+    for i in range(min(len(peaks), len(onsets) - 1)):
+        peak_idx = peaks[i]
+        onset_idx = onsets[i]
+        next_onset_idx = onsets[i + 1] if i + 1 < len(onsets) else None
+
+        # crest time: onset to peak
+        ct = (peak_idx - onset_idx) / sampling_rate
+        crest_times.append(ct)
+
+        # pulse width
+        if next_onset_idx is not None:
+            pw = (next_onset_idx - onset_idx) / sampling_rate
+            pulse_widths.append(pw)
+
+            # pulse area
+            pulse = signal[onset_idx:next_onset_idx]
+            area = np.trapz(pulse - signal[onset_idx]) / sampling_rate
+            pulse_areas.append(area)
+
+        # delta T (peak to dicrotic notch)
+        if i < len(dicrotic_notches) and dicrotic_notches[i] > 0:
+            dn_idx = dicrotic_notches[i]
+            dt_val = (dn_idx - peak_idx) / sampling_rate
+            delta_ts.append(dt_val)
+
+            # stiffness index
+            if height is not None and dt_val > 0:
+                si = height / dt_val
+                stiffness_indices.append(si)
+
+            # reflection index
+            if i < len(dicrotic_peaks_arr) and dicrotic_peaks_arr[i] > 0:
+                dp_idx = dicrotic_peaks_arr[i]
+                systolic_amp = signal[peak_idx] - signal[onset_idx]
+                diastolic_amp = signal[dp_idx] - signal[onset_idx]
+                if systolic_amp > 0:
+                    ri = diastolic_amp / systolic_amp
+                    reflection_indices.append(ri)
+
+            # augmentation index
+            dn_amp = signal[dn_idx] - signal[onset_idx]
+            systolic_amp = signal[peak_idx] - signal[onset_idx]
+            if systolic_amp > 0:
+                augmentation_pressure = signal[peak_idx] - signal[dn_idx]
+                aix = (augmentation_pressure / systolic_amp) * 100.0
+                augmentation_indices.append(aix)
+
+    # compute means
+    crest_time_mean = np.mean(crest_times) if crest_times else np.nan
+    delta_t_mean = np.mean(delta_ts) if delta_ts else np.nan
+    pulse_width_mean = np.mean(pulse_widths) if pulse_widths else np.nan
+    augmentation_index = np.mean(augmentation_indices) if augmentation_indices else np.nan
+    stiffness_index = np.mean(stiffness_indices) if stiffness_indices else np.nan
+    reflection_index = np.mean(reflection_indices) if reflection_indices else np.nan
+    pulse_area = np.array(pulse_areas) if pulse_areas else np.array([])
+
+    args = (augmentation_index, stiffness_index, reflection_index,
+            crest_time_mean, delta_t_mean, pulse_width_mean, pulse_area)
+    names = ('augmentation_index', 'stiffness_index', 'reflection_index',
+             'crest_time_mean', 'delta_t_mean', 'pulse_width_mean',
+             'pulse_area')
+
+    return utils.ReturnTuple(args, names)
+
+
+def ppg_signal_quality(signal=None, sampling_rate=1000., peaks=None):
+    """Assess PPG signal quality using multiple criteria.
+
+    Parameters
+    ----------
+    signal : array
+        Filtered PPG signal.
+    sampling_rate : int, float, optional
+        Sampling frequency (Hz).
+    peaks : array, optional
+        Indices of systolic peaks. If None, detected automatically.
+
+    Returns
+    -------
+    sqi_perfusion : float
+        Perfusion index: AC/DC ratio (%). Higher values indicate
+        better perfusion and signal quality.
+    sqi_skewness : float
+        Skewness-based SQI. Clean PPG is right-skewed (positive skewness).
+    sqi_kurtosis : float
+        Kurtosis-based SQI. Clean PPG has specific kurtosis range.
+    sqi_template : float
+        Template-matching SQI. Average correlation of each pulse with
+        the mean pulse template. Range: 0 (poor) to 1 (excellent).
+    sqi_overall : float
+        Overall SQI score (0-1) combining all metrics.
+
+    References
+    ----------
+    Elgendi M. Optimal signal quality index for photoplethysmogram signals.
+    Bioengineering. 2016;3(4):21.
+
+    Li Q, Clifford GD. Dynamic time warping and machine learning for signal
+    quality assessment of pulsatile signals. Physiol Meas.
+    2012;33(9):1491-1501.
+    """
+
+    if signal is None:
+        raise TypeError("Please specify an input signal.")
+
+    signal = np.array(signal, dtype=float)
+    sampling_rate = float(sampling_rate)
+
+    # perfusion index: AC/DC ratio
+    dc = np.mean(signal)
+    ac = (np.max(signal) - np.min(signal)) / 2.0
+    sqi_perfusion = (ac / abs(dc) * 100.0) if abs(dc) > 0 else 0.0
+
+    # skewness
+    from scipy.stats import skew, kurtosis as sp_kurtosis
+    sqi_skewness = skew(signal)
+
+    # kurtosis
+    sqi_kurtosis = sp_kurtosis(signal)
+
+    # template matching SQI
+    sqi_template = 0.0
+    if peaks is not None and len(peaks) >= 3:
+        templates = []
+        for i in range(len(peaks) - 1):
+            start = peaks[i]
+            end = peaks[i + 1]
+            pulse = signal[start:end]
+            if len(pulse) >= 5:
+                target_len = 100
+                x_old = np.linspace(0, 1, len(pulse))
+                x_new = np.linspace(0, 1, target_len)
+                pulse_resampled = np.interp(x_new, x_old, pulse)
+                templates.append(pulse_resampled)
+
+        if len(templates) >= 3:
+            templates_arr = np.array(templates)
+            mean_template = np.mean(templates_arr, axis=0)
+
+            correlations = []
+            for tmpl in templates_arr:
+                corr = np.corrcoef(tmpl, mean_template)[0, 1]
+                correlations.append(corr)
+
+            sqi_template = np.mean(correlations)
+
+    # overall SQI score
+    scores = []
+    scores.append(min(sqi_perfusion / 5.0, 1.0))
+    scores.append(1.0 if sqi_skewness > 0 else max(0, 0.5 + sqi_skewness))
+    if sqi_template > 0:
+        scores.append(max(0, sqi_template))
+    sqi_overall = np.mean(scores)
+
+    args = (sqi_perfusion, sqi_skewness, sqi_kurtosis, sqi_template,
+            sqi_overall)
+    names = ('sqi_perfusion', 'sqi_skewness', 'sqi_kurtosis',
+             'sqi_template', 'sqi_overall')
 
     return utils.ReturnTuple(args, names)

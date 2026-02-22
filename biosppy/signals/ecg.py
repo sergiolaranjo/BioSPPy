@@ -105,6 +105,9 @@ def ecg(
         - `"engzee"` → `engzee_segmenter`
         - `"ssf"` → `ssf_segmenter`
         - `"pan-tompkins"` → `Pan_Tompkins_Plus_Plus_segmenter`
+        - `"elgendi"` → `elgendi_segmenter`
+        - `"kalidas"` → `kalidas_segmenter`
+        - `"nabian"` → `nabian_segmenter`
         If a different name is passed hamilton will be used.
     verbose_segmenting : bool, optional
         If True, prints which valid parameters (for the chosen segmenter)
@@ -169,6 +172,9 @@ def ecg(
         "engzee": engzee_segmenter,
         "ssf": ssf_segmenter,
         "pan-tompkins": Pan_Tompkins_Plus_Plus_segmenter,
+        "elgendi": elgendi_segmenter,
+        "kalidas": kalidas_segmenter,
+        "nabian": nabian_segmenter,
     }
     try:
         chosen_segmenter = segmenters[segmenter]
@@ -1959,6 +1965,526 @@ def Pan_Tompkins_Plus_Plus_segmenter(signal=None, sampling_rate=1000.0):
     qrs_i = qrs_i[: Beat_C + 1]
 
     return utils.ReturnTuple((qrs_i_raw.astype(int),), ("rpeaks",))
+
+
+def elgendi_segmenter(signal=None, sampling_rate=1000.0):
+    """R-peak detection using the Two Moving Averages method by Elgendi.
+
+    Uses two moving averages (short for QRS, long for beat) applied to the
+    squared bandpass-filtered ECG signal. Blocks of interest are detected
+    where the short moving average exceeds the long moving average plus an
+    offset.
+
+    Parameters
+    ----------
+    signal : array
+        Input filtered ECG signal.
+    sampling_rate : int, float, optional
+        Sampling frequency (Hz).
+
+    Returns
+    -------
+    rpeaks : array
+        R-peak location indices.
+
+    References
+    ----------
+    Elgendi M, Jonkman M, De Boer F. "Frequency Bands Effects on QRS
+    Detection." Proc. BioSig 2010.
+
+    Elgendi M. "Fast QRS Detection with an Optimized Knowledge-Based
+    Method: Evaluation on 11 Standard ECG Databases." PLoS ONE.
+    2013;8(9):e73557.
+    """
+
+    if signal is None:
+        raise TypeError("Please specify an input signal.")
+
+    signal = np.array(signal, dtype=float)
+    sampling_rate = float(sampling_rate)
+
+    # bandpass filter 8-20 Hz (optimal for QRS detection)
+    filtered, _, _ = st.filter_signal(signal=signal,
+                                       ftype='butter',
+                                       band='bandpass',
+                                       order=2,
+                                       frequency=[8, 20],
+                                       sampling_rate=sampling_rate)
+
+    # square the signal to enhance QRS complexes
+    squared = filtered ** 2
+
+    # W1: QRS window (0.12 seconds ~ QRS width)
+    w1 = int(0.12 * sampling_rate)
+    if w1 % 2 == 0:
+        w1 += 1  # ensure odd
+
+    # W2: beat window (0.611 seconds ~ avg beat period)
+    w2 = int(0.611 * sampling_rate)
+    if w2 % 2 == 0:
+        w2 += 1  # ensure odd
+
+    # moving averages
+    ma_qrs, _ = st.smoother(squared, kernel='boxcar', size=w1)
+    ma_beat, _ = st.smoother(squared, kernel='boxcar', size=w2)
+
+    # threshold: beat MA + offset
+    beta = 0.02
+    thr = ma_beat + beta * np.mean(squared)
+
+    # blocks of interest where QRS MA > threshold
+    blocks = (ma_qrs > thr).astype(int)
+
+    # find block boundaries
+    diff_blocks = np.diff(blocks)
+    block_starts = np.where(diff_blocks == 1)[0] + 1
+    block_ends = np.where(diff_blocks == -1)[0] + 1
+
+    if len(block_starts) == 0 or len(block_ends) == 0:
+        return utils.ReturnTuple((np.array([], dtype=int),), ('rpeaks',))
+
+    # ensure ends come after starts
+    if block_ends[0] < block_starts[0]:
+        block_ends = block_ends[1:]
+    n_blocks = min(len(block_starts), len(block_ends))
+
+    # minimum block width
+    min_width = int(0.08 * sampling_rate)
+
+    # find R-peaks as maximum within each block
+    rpeaks = []
+    min_delay = int(0.3 * sampling_rate)  # minimum 300ms between peaks
+
+    for i in range(n_blocks):
+        beg = block_starts[i]
+        end = block_ends[i]
+
+        if end - beg < min_width:
+            continue
+
+        # find max in original signal within block
+        peak_idx = beg + np.argmax(signal[beg:end])
+
+        if len(rpeaks) == 0 or (peak_idx - rpeaks[-1]) > min_delay:
+            rpeaks.append(peak_idx)
+
+    rpeaks = np.array(rpeaks, dtype=int)
+
+    return utils.ReturnTuple((rpeaks,), ('rpeaks',))
+
+
+def kalidas_segmenter(signal=None, sampling_rate=1000.0):
+    """R-peak detection using Stationary Wavelet Transform (SWT).
+
+    Uses the stationary wavelet transform with the 'db3' wavelet to
+    decompose the ECG signal. Detail coefficients at appropriate scales
+    are combined and thresholded for QRS detection.
+
+    Parameters
+    ----------
+    signal : array
+        Input filtered ECG signal.
+    sampling_rate : int, float, optional
+        Sampling frequency (Hz).
+
+    Returns
+    -------
+    rpeaks : array
+        R-peak location indices.
+
+    References
+    ----------
+    Kalidas V, Tamil LS. "Real-time QRS detector using Stationary Wavelet
+    Transform for Automated ECG Analysis." Proc. IEEE EMBS BHI. 2017.
+    """
+
+    if signal is None:
+        raise TypeError("Please specify an input signal.")
+
+    signal = np.array(signal, dtype=float)
+    sampling_rate = float(sampling_rate)
+
+    import pywt
+
+    # pad signal to power of 2 for SWT
+    n = len(signal)
+    level = 4  # decomposition level
+    pad_len = int(2 ** np.ceil(np.log2(n))) - n
+    if pad_len > 0:
+        signal_padded = np.pad(signal, (0, pad_len), mode='reflect')
+    else:
+        signal_padded = signal
+
+    # stationary wavelet transform
+    coeffs = pywt.swt(signal_padded, 'db3', level=level)
+
+    # select detail coefficients at scale 2^1 and 2^2
+    # (these correspond to QRS frequency content)
+    # coeffs[level-1] is level 1 (highest freq), coeffs[level-2] is level 2
+    d1 = coeffs[-1][1][:n]  # detail level 1
+    d2 = coeffs[-2][1][:n]  # detail level 2
+
+    # combine detail coefficients
+    combined = d1 ** 2 + d2 ** 2
+
+    # adaptive threshold
+    thr = np.mean(combined) + 0.5 * np.std(combined)
+
+    # find regions above threshold
+    above = (combined > thr).astype(int)
+    diff_above = np.diff(above)
+    starts = np.where(diff_above == 1)[0] + 1
+    ends = np.where(diff_above == -1)[0] + 1
+
+    if len(starts) == 0 or len(ends) == 0:
+        return utils.ReturnTuple((np.array([], dtype=int),), ('rpeaks',))
+
+    if ends[0] < starts[0]:
+        ends = ends[1:]
+    n_regions = min(len(starts), len(ends))
+
+    # find R-peaks as maximum of original signal within each region
+    rpeaks = []
+    min_delay = int(0.2 * sampling_rate)
+
+    for i in range(n_regions):
+        beg = starts[i]
+        end = ends[i]
+
+        if end > len(signal):
+            end = len(signal)
+
+        peak_idx = beg + np.argmax(np.abs(signal[beg:end]))
+
+        if len(rpeaks) == 0 or (peak_idx - rpeaks[-1]) > min_delay:
+            rpeaks.append(peak_idx)
+
+    rpeaks = np.array(rpeaks, dtype=int)
+
+    return utils.ReturnTuple((rpeaks,), ('rpeaks',))
+
+
+def nabian_segmenter(signal=None, sampling_rate=1000.0):
+    """R-peak detection using a gradient-based approach.
+
+    A simple, fast, gradient-based QRS detector suitable for real-time
+    applications. Uses the first derivative magnitude and adaptive
+    thresholding.
+
+    Parameters
+    ----------
+    signal : array
+        Input filtered ECG signal.
+    sampling_rate : int, float, optional
+        Sampling frequency (Hz).
+
+    Returns
+    -------
+    rpeaks : array
+        R-peak location indices.
+
+    References
+    ----------
+    Nabian M, Yin Y, Wormwood J, Quigley KS, Barrett LF, Bhatt S.
+    "An Open-Source Feature Extraction Tool for the Analysis of Peripheral
+    Physiological Data." Sensors. 2018;18(11):3779.
+    """
+
+    if signal is None:
+        raise TypeError("Please specify an input signal.")
+
+    signal = np.array(signal, dtype=float)
+    sampling_rate = float(sampling_rate)
+
+    # bandpass filter 3-45 Hz
+    filtered, _, _ = st.filter_signal(signal=signal,
+                                       ftype='butter',
+                                       band='bandpass',
+                                       order=2,
+                                       frequency=[3, 45],
+                                       sampling_rate=sampling_rate)
+
+    # compute gradient magnitude
+    grad = np.abs(np.gradient(filtered))
+
+    # square the gradient
+    grad_sq = grad ** 2
+
+    # moving average window (~100ms)
+    window = int(0.1 * sampling_rate)
+    if window < 1:
+        window = 1
+    ma, _ = st.smoother(grad_sq, kernel='boxcar', size=window)
+
+    # adaptive threshold (mean + factor * std)
+    thr = np.mean(ma) + 0.6 * np.std(ma)
+
+    # find peaks above threshold
+    candidates, _ = ss.find_peaks(ma, height=thr,
+                                   distance=int(0.3 * sampling_rate))
+
+    # refine: find actual R-peak in original signal around each candidate
+    rpeaks = []
+    search_window = int(0.05 * sampling_rate)
+
+    for c in candidates:
+        beg = max(0, c - search_window)
+        end = min(len(signal), c + search_window)
+        rpeak = beg + np.argmax(signal[beg:end])
+        if len(rpeaks) == 0 or (rpeak - rpeaks[-1]) > int(0.2 * sampling_rate):
+            rpeaks.append(rpeak)
+
+    rpeaks = np.array(rpeaks, dtype=int)
+
+    return utils.ReturnTuple((rpeaks,), ('rpeaks',))
+
+
+def ecg_wavelet_delineation(signal=None, rpeaks=None, sampling_rate=1000.0):
+    """ECG wave delineation using the Discrete Wavelet Transform.
+
+    Detects P-wave, QRS complex, and T-wave boundaries (onset, peak, offset)
+    using multi-scale wavelet analysis. This is based on the approach by
+    Martinez et al. (2004) which uses zero-crossings and modulus maxima
+    of the wavelet transform at multiple scales.
+
+    Parameters
+    ----------
+    signal : array
+        Filtered ECG signal.
+    rpeaks : array
+        R-peak location indices.
+    sampling_rate : int, float, optional
+        Sampling frequency (Hz).
+
+    Returns
+    -------
+    p_onsets : array
+        P-wave onset indices.
+    p_peaks : array
+        P-wave peak indices.
+    p_offsets : array
+        P-wave offset indices.
+    qrs_onsets : array
+        QRS onset indices.
+    q_peaks : array
+        Q-wave peak indices.
+    s_peaks : array
+        S-wave peak indices.
+    qrs_offsets : array
+        QRS offset indices.
+    t_onsets : array
+        T-wave onset indices.
+    t_peaks : array
+        T-wave peak indices.
+    t_offsets : array
+        T-wave offset indices.
+    qrs_durations : array
+        QRS durations (ms).
+    qt_intervals : array
+        QT intervals (ms).
+    qtc_bazett : array
+        QTc intervals using Bazett's formula (ms).
+    pr_intervals : array
+        PR intervals (ms).
+
+    References
+    ----------
+    Martinez JP, Almeida R, Olmos S, Rocha AP, Laguna P. "A wavelet-based
+    ECG delineator: evaluation on standard databases." IEEE Trans Biomed Eng.
+    2004;51(4):570-581.
+
+    Notes
+    -----
+    * Uses a multi-resolution approach with the 'db4' wavelet.
+    * P and T waves are searched in physiologically plausible windows
+      relative to R-peaks.
+    * QRS boundaries are detected using gradient analysis near R-peaks.
+    * QTc is computed using Bazett's formula: QTc = QT / sqrt(RR).
+    """
+
+    if signal is None or rpeaks is None:
+        raise TypeError("Please specify an ECG signal and R-peak locations.")
+
+    signal = np.array(signal, dtype=float)
+    rpeaks = np.array(rpeaks, dtype=int)
+    sampling_rate = float(sampling_rate)
+
+    if len(rpeaks) < 3:
+        raise ValueError("Need at least 3 R-peaks for delineation.")
+
+    import pywt
+
+    # compute wavelet transform at multiple scales
+    # Use db4 wavelet, 4 levels of decomposition
+    wavelet = 'db4'
+    max_level = 4
+    coeffs = pywt.wavedec(signal, wavelet, level=max_level)
+
+    # reconstruct detail signals at each level
+    details = []
+    for i in range(1, max_level + 1):
+        # reconstruct signal from level i detail coefficients only
+        c = [np.zeros_like(c) for c in coeffs]
+        c[i] = coeffs[i]
+        detail = pywt.waverec(c, wavelet)[:len(signal)]
+        details.append(detail)
+
+    # detail at level 2-3 is best for QRS, level 3-4 for P and T waves
+    d2 = details[1]  # level 2 detail
+    d3 = details[2]  # level 3 detail
+    d4 = details[3]  # level 4 detail
+
+    # initialize output arrays
+    n_beats = len(rpeaks)
+    p_onsets = np.full(n_beats, -1, dtype=int)
+    p_peaks_arr = np.full(n_beats, -1, dtype=int)
+    p_offsets = np.full(n_beats, -1, dtype=int)
+    qrs_onsets = np.full(n_beats, -1, dtype=int)
+    q_peaks = np.full(n_beats, -1, dtype=int)
+    s_peaks = np.full(n_beats, -1, dtype=int)
+    qrs_offsets = np.full(n_beats, -1, dtype=int)
+    t_onsets = np.full(n_beats, -1, dtype=int)
+    t_peaks_arr = np.full(n_beats, -1, dtype=int)
+    t_offsets = np.full(n_beats, -1, dtype=int)
+
+    for i, rpeak in enumerate(rpeaks):
+        rr_before = (rpeaks[i] - rpeaks[i - 1]) if i > 0 else int(0.8 * sampling_rate)
+        rr_after = (rpeaks[i + 1] - rpeaks[i]) if i < n_beats - 1 else int(0.8 * sampling_rate)
+
+        # --- QRS delineation ---
+        # Q peak: minimum in signal within 80ms before R-peak
+        q_start = max(0, rpeak - int(0.08 * sampling_rate))
+        q_segment = signal[q_start:rpeak]
+        if len(q_segment) > 0:
+            q_peaks[i] = q_start + np.argmin(q_segment)
+
+        # S peak: minimum in signal within 80ms after R-peak
+        s_end = min(len(signal), rpeak + int(0.08 * sampling_rate))
+        s_segment = signal[rpeak:s_end]
+        if len(s_segment) > 1:
+            s_peaks[i] = rpeak + np.argmin(s_segment)
+
+        # QRS onset: steepest descent before Q using wavelet detail
+        qrs_on_start = max(0, rpeak - int(0.12 * sampling_rate))
+        if q_peaks[i] > 0:
+            d2_segment = np.abs(d2[qrs_on_start:q_peaks[i]])
+            if len(d2_segment) > 0:
+                # find where wavelet detail drops below threshold
+                thr_qrs = 0.1 * np.max(d2_segment)
+                below = np.where(d2_segment < thr_qrs)[0]
+                if len(below) > 0:
+                    qrs_onsets[i] = qrs_on_start + below[-1]
+                else:
+                    qrs_onsets[i] = qrs_on_start
+
+        # QRS offset: after S peak, where wavelet detail drops
+        if s_peaks[i] > 0:
+            qrs_off_end = min(len(signal), rpeak + int(0.15 * sampling_rate))
+            d2_segment = np.abs(d2[s_peaks[i]:qrs_off_end])
+            if len(d2_segment) > 0:
+                thr_qrs = 0.1 * np.max(np.abs(d2[q_peaks[i]:s_peaks[i]+1])) if q_peaks[i] > 0 else 0.1 * np.max(d2_segment)
+                below = np.where(d2_segment < thr_qrs)[0]
+                if len(below) > 0:
+                    qrs_offsets[i] = s_peaks[i] + below[0]
+                else:
+                    qrs_offsets[i] = min(s_peaks[i] + int(0.04 * sampling_rate),
+                                         len(signal) - 1)
+
+        # --- T wave delineation ---
+        # Search window: 80ms to 60% of RR after QRS offset
+        t_search_start = qrs_offsets[i] if qrs_offsets[i] > 0 else rpeak + int(0.08 * sampling_rate)
+        t_search_end = min(len(signal), rpeak + int(0.6 * rr_after))
+
+        if t_search_end > t_search_start + 5:
+            t_segment = signal[t_search_start:t_search_end]
+            # T-peak: maximum (or minimum for inverted T) in search window
+            t_max_idx = np.argmax(np.abs(t_segment - np.mean(t_segment)))
+            t_peaks_arr[i] = t_search_start + t_max_idx
+
+            # T onset: use wavelet detail to find start of T wave
+            d4_t = d4[t_search_start:t_peaks_arr[i]]
+            if len(d4_t) > 2:
+                thr_t = 0.15 * np.max(np.abs(d4_t))
+                above = np.where(np.abs(d4_t) > thr_t)[0]
+                if len(above) > 0:
+                    t_onsets[i] = t_search_start + above[0]
+
+            # T offset: use wavelet detail to find end of T wave
+            d4_t2 = d4[t_peaks_arr[i]:t_search_end]
+            if len(d4_t2) > 2:
+                thr_t = 0.15 * np.max(np.abs(d4_t2))
+                below = np.where(np.abs(d4_t2) < thr_t)[0]
+                if len(below) > 0:
+                    t_offsets[i] = t_peaks_arr[i] + below[0]
+
+        # --- P wave delineation ---
+        # Search window: 200ms to 50ms before QRS onset (or R-peak)
+        p_search_ref = qrs_onsets[i] if qrs_onsets[i] > 0 else rpeak
+        p_search_start = max(0, p_search_ref - int(0.2 * sampling_rate))
+        p_search_end = max(0, p_search_ref - int(0.02 * sampling_rate))
+
+        if p_search_end > p_search_start + 5:
+            p_segment = signal[p_search_start:p_search_end]
+            # P-peak: maximum in search window
+            p_peaks_arr[i] = p_search_start + np.argmax(p_segment)
+
+            # P onset
+            d4_p = d4[p_search_start:p_peaks_arr[i]]
+            if len(d4_p) > 2:
+                thr_p = 0.15 * np.max(np.abs(d4_p))
+                above = np.where(np.abs(d4_p) > thr_p)[0]
+                if len(above) > 0:
+                    p_onsets[i] = p_search_start + above[0]
+
+            # P offset
+            d4_p2 = d4[p_peaks_arr[i]:p_search_end]
+            if len(d4_p2) > 2:
+                thr_p = 0.15 * np.max(np.abs(d4_p2))
+                below = np.where(np.abs(d4_p2) < thr_p)[0]
+                if len(below) > 0:
+                    p_offsets[i] = p_peaks_arr[i] + below[0]
+
+    # compute derived intervals
+    qrs_durations = np.full(n_beats, np.nan)
+    qt_intervals = np.full(n_beats, np.nan)
+    qtc_bazett = np.full(n_beats, np.nan)
+    pr_intervals = np.full(n_beats, np.nan)
+
+    for i in range(n_beats):
+        # QRS duration
+        if qrs_onsets[i] > 0 and qrs_offsets[i] > 0:
+            qrs_durations[i] = (qrs_offsets[i] - qrs_onsets[i]) / sampling_rate * 1000.0
+
+        # QT interval (QRS onset to T offset)
+        if qrs_onsets[i] > 0 and t_offsets[i] > 0:
+            qt_intervals[i] = (t_offsets[i] - qrs_onsets[i]) / sampling_rate * 1000.0
+
+            # QTc (Bazett): QT / sqrt(RR)
+            if i < n_beats - 1:
+                rr_sec = (rpeaks[i + 1] - rpeaks[i]) / sampling_rate
+            elif i > 0:
+                rr_sec = (rpeaks[i] - rpeaks[i - 1]) / sampling_rate
+            else:
+                rr_sec = 1.0
+
+            if rr_sec > 0:
+                qtc_bazett[i] = qt_intervals[i] / np.sqrt(rr_sec)
+
+        # PR interval (P onset to QRS onset)
+        if p_onsets[i] > 0 and qrs_onsets[i] > 0:
+            pr_intervals[i] = (qrs_onsets[i] - p_onsets[i]) / sampling_rate * 1000.0
+
+    # output
+    args = (p_onsets, p_peaks_arr, p_offsets,
+            qrs_onsets, q_peaks, s_peaks, qrs_offsets,
+            t_onsets, t_peaks_arr, t_offsets,
+            qrs_durations, qt_intervals, qtc_bazett, pr_intervals)
+    names = ('p_onsets', 'p_peaks', 'p_offsets',
+             'qrs_onsets', 'q_peaks', 's_peaks', 'qrs_offsets',
+             't_onsets', 't_peaks', 't_offsets',
+             'qrs_durations', 'qt_intervals', 'qtc_bazett', 'pr_intervals')
+
+    return utils.ReturnTuple(args, names)
 
 
 def find_artifacts(peaks, sampling_rate):

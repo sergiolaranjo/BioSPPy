@@ -681,6 +681,22 @@ def hrv_nonlinear(rri=None, duration=None, detrend_rri=True, show=False):
         appen = approximate_entropy(rri)
         out = out.append(appen, 'appen')
 
+    # compute DFA alpha1 and alpha2
+    if len(rri) >= 64:
+        try:
+            dfa_out = dfa_alpha(rri=rri)
+            out = out.join(dfa_out)
+        except (ValueError, Exception):
+            pass
+
+    # compute fragmentation indices
+    if len(rri) >= 4:
+        try:
+            frag_out = hrv_fragmentation(rri=rri)
+            out = out.join(frag_out)
+        except (ValueError, Exception):
+            pass
+
     return out
 
 
@@ -1813,6 +1829,228 @@ def _plot_hrt(rri, vpc_indices, to, ts):
     else:
         warnings.warn("Could not generate HRT plot. No valid VPCs with "
                      "sufficient surrounding intervals.")
+
+
+def hrv_fragmentation(rri=None):
+    """Compute Heart Rate Fragmentation indices from RR intervals.
+
+    Fragmentation indices quantify the "erratic" nature of heart rate
+    dynamics independently of HRV magnitude. They capture short-term
+    irregularities (inflection points, alternations) that entropy measures
+    may miss.
+
+    Parameters
+    ----------
+    rri : array
+        RR-intervals (ms).
+
+    Returns
+    -------
+    pip : float
+        PIP - Percentage of Inflection Points. An inflection point occurs
+        when the sign of successive RRI differences changes.
+    ials : float
+        IALS - Inverse of the Average Length of Acceleration/Deceleration
+        Segments. Higher values indicate more fragmented heart rate.
+    pss : float
+        PSS - Percentage of Short Segments (length <= 3 intervals).
+    pas : float
+        PAS - Percentage of Alternating Segments. Segments of length 1
+        where the sign alternates.
+
+    References
+    ----------
+    Costa MD, Davis RB, Goldberger AL. Heart Rate Fragmentation: A New
+    Approach to the Analysis of Cardiac Interbeat Interval Dynamics.
+    Front Physiol. 2017;8:255. doi:10.3389/fphys.2017.00255
+
+    Notes
+    -----
+    * PIP is the most basic fragmentation metric.
+    * IALS captures the average segment length (inverted).
+    * PSS and PAS focus on very short and alternating segments.
+    * These indices are independent of HRV magnitude (SDNN, RMSSD).
+    * Higher fragmentation values are associated with aging and disease.
+    """
+
+    # check inputs
+    if rri is None:
+        raise TypeError("Please specify an RRI list or array.")
+
+    rri = np.array(rri, dtype=float)
+
+    if len(rri) < 4:
+        raise ValueError("Need at least 4 RR intervals for fragmentation.")
+
+    # compute successive differences
+    diff_rri = np.diff(rri)
+
+    # remove zero differences (treat as no change)
+    # sign: -1 for deceleration, +1 for acceleration, 0 for no change
+    signs = np.sign(diff_rri)
+
+    # PIP: Percentage of Inflection Points
+    # An inflection point at index i means sign(diff[i]) != sign(diff[i-1])
+    sign_changes = np.diff(signs)
+    n_inflections = np.sum(sign_changes != 0)
+    pip = 100.0 * n_inflections / (len(signs) - 1)
+
+    # Segment analysis: identify runs of same-sign differences
+    # A segment is a consecutive run of differences with the same sign
+    segments = []
+    current_len = 1
+
+    for i in range(1, len(signs)):
+        if signs[i] == signs[i - 1] and signs[i] != 0:
+            current_len += 1
+        else:
+            segments.append(current_len)
+            current_len = 1
+    segments.append(current_len)  # last segment
+
+    segments = np.array(segments)
+
+    # IALS: Inverse of Average Length of Acceleration/Deceleration Segments
+    avg_len = np.mean(segments)
+    ials = 1.0 / avg_len if avg_len > 0 else np.inf
+
+    # PSS: Percentage of Short Segments (length <= 3)
+    n_short = np.sum(segments <= 3)
+    pss = 100.0 * n_short / len(segments) if len(segments) > 0 else 0.0
+
+    # PAS: Percentage of Alternating Segments (length == 1)
+    n_alternating = np.sum(segments == 1)
+    pas = 100.0 * n_alternating / len(segments) if len(segments) > 0 else 0.0
+
+    # output
+    out = utils.ReturnTuple(
+        (pip, ials, pss, pas),
+        ('pip', 'ials', 'pss', 'pas')
+    )
+
+    return out
+
+
+def dfa_alpha(rri=None, short_range=(4, 16), long_range=(16, 64), n_wins=20):
+    """Compute DFA alpha1 and alpha2 scaling exponents from RR intervals.
+
+    DFA alpha1 (short-term) and alpha2 (long-term) are among the most
+    clinically validated nonlinear HRV features. alpha1 captures short-range
+    fractal correlations (4-16 beats), while alpha2 captures long-range
+    correlations (16-64 beats).
+
+    Parameters
+    ----------
+    rri : array
+        RR-intervals (ms).
+    short_range : tuple, optional
+        Window size range for alpha1 (min, max). Default: (4, 16).
+    long_range : tuple, optional
+        Window size range for alpha2 (min, max). Default: (16, 64).
+    n_wins : int, optional
+        Number of window sizes per range. Default: 20.
+
+    Returns
+    -------
+    alpha1 : float
+        Short-term DFA scaling exponent (4-16 beats).
+    alpha2 : float
+        Long-term DFA scaling exponent (16-64 beats).
+    alpha_total : float
+        Overall DFA scaling exponent.
+
+    References
+    ----------
+    Peng CK, Havlin S, Stanley HE, Goldberger AL. Quantification of scaling
+    exponents and crossover phenomena in nonstationary heartbeat time series.
+    Chaos. 1995;5(1):82-87.
+
+    Notes
+    -----
+    * alpha1 ~ 1.0: healthy fractal-like heart rate dynamics.
+    * alpha1 < 0.65: loss of short-range correlations (heart failure, aging).
+    * alpha1 > 1.5: strong short-range correlations.
+    * alpha1 is a strong predictor of mortality post-MI.
+    * alpha2 reflects long-range regulation.
+    """
+
+    # check inputs
+    if rri is None:
+        raise TypeError("Please specify an RRI list or array.")
+
+    rri = np.array(rri, dtype=float)
+
+    if len(rri) < long_range[1]:
+        raise ValueError(
+            f"Need at least {long_range[1]} RR intervals for DFA alpha2. "
+            f"Got {len(rri)}."
+        )
+
+    # import DFA from chaos module
+    from .. import chaos
+
+    # integrate the signal (cumulative sum of deviations from mean)
+    y = np.cumsum(rri - np.mean(rri))
+    N = len(y)
+
+    def _compute_alpha(win_min, win_max, n_w):
+        """Compute DFA scaling exponent for a specific window range."""
+        window_sizes = np.unique(
+            np.logspace(np.log10(win_min), np.log10(min(win_max, N // 4)),
+                        n_w, dtype=int)
+        )
+        # filter valid window sizes
+        window_sizes = window_sizes[window_sizes >= 4]
+
+        if len(window_sizes) < 2:
+            return np.nan
+
+        fluctuations = []
+        for win_size in window_sizes:
+            n_segments = N // win_size
+            if n_segments < 1:
+                continue
+
+            f_vals = np.zeros(n_segments)
+            for i in range(n_segments):
+                segment = y[i * win_size:(i + 1) * win_size]
+                x = np.arange(len(segment))
+                coeffs = np.polyfit(x, segment, 1)
+                trend = np.polyval(coeffs, x)
+                f_vals[i] = np.sqrt(np.mean((segment - trend) ** 2))
+
+            fluctuations.append(np.sqrt(np.mean(f_vals ** 2)))
+
+        fluctuations = np.array(fluctuations)
+        valid_sizes = window_sizes[:len(fluctuations)]
+
+        # remove zero or negative fluctuations
+        valid = fluctuations > 0
+        if np.sum(valid) < 2:
+            return np.nan
+
+        coeffs = np.polyfit(
+            np.log10(valid_sizes[valid]),
+            np.log10(fluctuations[valid]), 1
+        )
+        return coeffs[0]
+
+    # compute alpha1 (short-term)
+    alpha1 = _compute_alpha(short_range[0], short_range[1], n_wins)
+
+    # compute alpha2 (long-term)
+    alpha2 = _compute_alpha(long_range[0], long_range[1], n_wins)
+
+    # compute total alpha
+    alpha_total = _compute_alpha(short_range[0], long_range[1], n_wins * 2)
+
+    # output
+    out = utils.ReturnTuple(
+        (alpha1, alpha2, alpha_total),
+        ('alpha1', 'alpha2', 'alpha_total')
+    )
+
+    return out
 
 
 def hht_nonlinear_features(rri=None, method='ceemdan', num_ensemble=100,
