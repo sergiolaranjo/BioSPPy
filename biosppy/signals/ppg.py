@@ -673,17 +673,49 @@ def find_dicrotic_notch(signal=None, peaks=None, onsets=None,
 
         # search for dicrotic notch between peak and next onset
         segment = signal[peak_idx:next_onset]
-        if len(segment) < 3:
+        beat_dur = next_onset - peak_idx
+        if len(segment) < 3 or beat_dur < 3:
             dicrotic_notches.append(-1)
             dicrotic_peaks.append(-1)
             continue
 
-        # find local minima in the segment
+        # constrain search to [0.15, 0.7] of peak-to-onset duration
+        # to avoid noise near the peak or onset
+        search_start = int(0.15 * beat_dur)
+        search_end = int(0.7 * beat_dur)
+        if search_start >= search_end:
+            search_start = 0
+            search_end = len(segment)
+
+        # find local minima in the constrained segment
         local_mins, _ = ss.find_peaks(-segment)
 
-        if len(local_mins) > 0:
-            # take the first prominent local minimum as the dicrotic notch
-            notch_rel = local_mins[0]
+        # filter to those within the search window
+        valid_mins = local_mins[(local_mins >= search_start) &
+                                (local_mins <= search_end)]
+
+        if len(valid_mins) == 0:
+            # fallback: try all local mins, or use second derivative
+            if len(local_mins) > 0:
+                valid_mins = local_mins
+            else:
+                # use second derivative zero-crossing as fallback
+                d2 = np.gradient(np.gradient(segment))
+                zc = []
+                for j in range(search_start,
+                               min(search_end, len(d2) - 1)):
+                    if d2[j] >= 0 and d2[j + 1] < 0:
+                        zc.append(j)
+                if len(zc) > 0:
+                    valid_mins = np.array([zc[0]])
+                else:
+                    dicrotic_notches.append(-1)
+                    dicrotic_peaks.append(-1)
+                    continue
+
+        if len(valid_mins) > 0:
+            # select the deepest minimum in the valid range
+            notch_rel = valid_mins[np.argmin(segment[valid_mins])]
             notch_idx = peak_idx + notch_rel
             dicrotic_notches.append(notch_idx)
 
@@ -983,35 +1015,55 @@ def pulse_wave_analysis(signal=None, sampling_rate=1000., peaks=None,
 
             # pulse area
             pulse = signal[onset_idx:next_onset_idx]
-            area = np.trapz(pulse - signal[onset_idx]) / sampling_rate
+            _trapz = getattr(np, 'trapezoid', getattr(np, 'trapz', None))
+            area = _trapz(pulse - signal[onset_idx]) / sampling_rate
             pulse_areas.append(area)
 
-        # delta T (peak to dicrotic notch)
+        # delta T and related features
         if i < len(dicrotic_notches) and dicrotic_notches[i] > 0:
             dn_idx = dicrotic_notches[i]
             dt_val = (dn_idx - peak_idx) / sampling_rate
             delta_ts.append(dt_val)
 
-            # stiffness index
-            if height is not None and dt_val > 0:
-                si = height / dt_val
-                stiffness_indices.append(si)
-
-            # reflection index
+            # stiffness index: SI = height / (t_diastolic_peak - t_systolic_peak)
             if i < len(dicrotic_peaks_arr) and dicrotic_peaks_arr[i] > 0:
                 dp_idx = dicrotic_peaks_arr[i]
+                dt_dp = (dp_idx - peak_idx) / sampling_rate
+                if height is not None and dt_dp > 0:
+                    si = height / dt_dp
+                    stiffness_indices.append(si)
+
+                # reflection index: RI = diastolic_amp / systolic_amp
                 systolic_amp = signal[peak_idx] - signal[onset_idx]
                 diastolic_amp = signal[dp_idx] - signal[onset_idx]
                 if systolic_amp > 0:
                     ri = diastolic_amp / systolic_amp
                     reflection_indices.append(ri)
 
-            # augmentation index
-            dn_amp = signal[dn_idx] - signal[onset_idx]
+            # augmentation index: AIx = (P2 - P1) / PP * 100
+            # P1 = amplitude at inflection point on rising phase
+            # P2 = systolic peak amplitude
+            # Find inflection point via second derivative zero-crossing
             systolic_amp = signal[peak_idx] - signal[onset_idx]
             if systolic_amp > 0:
-                augmentation_pressure = signal[peak_idx] - signal[dn_idx]
-                aix = (augmentation_pressure / systolic_amp) * 100.0
+                rising = signal[onset_idx:peak_idx]
+                if len(rising) > 4:
+                    d2_rising = np.gradient(np.gradient(rising))
+                    # find last zero-crossing (positive-to-negative)
+                    zc_list = []
+                    for j in range(len(d2_rising) - 1):
+                        if d2_rising[j] >= 0 and d2_rising[j + 1] < 0:
+                            zc_list.append(j)
+                    if len(zc_list) > 0:
+                        ip_local = zc_list[-1]
+                        p1 = signal[onset_idx + ip_local] - signal[onset_idx]
+                        p2 = systolic_amp
+                        pp = systolic_amp
+                        aix = (p2 - p1) / pp * 100.0
+                    else:
+                        aix = 0.0  # no inflection point found
+                else:
+                    aix = 0.0
                 augmentation_indices.append(aix)
 
     # compute means
