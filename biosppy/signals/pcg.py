@@ -258,15 +258,15 @@ def get_avg_heart_rate(envelope=None, sampling_rate=1000.):
     min_index = int(0.3*sampling_rate)
     max_index = int(1.5*sampling_rate)
 
-    index = np.argmax(autocorrelation[min_index-1:max_index-1])
-    true_index = index+min_index-1
-    heartRate = 60/(true_index/sampling_rate)
-    
+    index = np.argmax(autocorrelation[min_index:max_index])
+    true_index = index + min_index
+    heartRate = 60 / (true_index / sampling_rate)
+
     max_sys_duration = int(np.round(((60/heartRate)*sampling_rate)/2))
     min_sys_duration = int(np.round(0.2*sampling_rate))
-    
-    pos = np.argmax(autocorrelation[min_sys_duration-1:max_sys_duration-1])
-    systolicTimeInterval = (min_sys_duration+pos)/sampling_rate
+
+    pos = np.argmax(autocorrelation[min_sys_duration:max_sys_duration])
+    systolicTimeInterval = (min_sys_duration + pos) / sampling_rate
     
 
     return utils.ReturnTuple((heartRate,systolicTimeInterval),

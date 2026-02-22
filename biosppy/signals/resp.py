@@ -499,14 +499,15 @@ def ecg_derived_respiration(ecg_signal=None, rpeaks=None,
         # time of each R-peak
         r_times = rpeaks / sampling_rate
 
-        # interpolate to create continuous signal
-        t_uniform = np.arange(r_times[0], r_times[-1], 1.0 / sampling_rate)
+        # interpolate to uniform sampling at 4 Hz (sufficient for respiration)
+        frs = 4.0
+        t_uniform = np.arange(r_times[0], r_times[-1], 1.0 / frs)
         edr_interp = interp1d(r_times, r_amplitudes, kind='cubic',
                               fill_value='extrapolate')
         edr = edr_interp(t_uniform)
 
         # bandpass filter to respiratory range (0.1-0.5 Hz)
-        nyq = sampling_rate / 2.0
+        nyq = frs / 2.0
         low = 0.1 / nyq
         high = min(0.5 / nyq, 0.99)
         b, a = ss.butter(2, [low, high], btype='bandpass')

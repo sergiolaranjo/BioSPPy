@@ -159,9 +159,10 @@ def eda_events(signal=None, sampling_rate=1000., method="emotiphai", **kwargs):
     rise_times : array
         Rise times, i.e. onset-peak time difference.
     half_rec : array
-        Half Recovery times, i.e. time between peak and 63% amplitude.
+        Half Recovery times, i.e. time between peak and 50% amplitude.
     six_rec : array
-        63 % recovery times, i.e. time between peak and 50% amplitude.
+        63 % recovery times, i.e. time between peak and 63% recovery
+        (37% remaining amplitude).
 
     """
 
@@ -512,13 +513,13 @@ def basic_scr(signal=None):
     if len(pi) == 0 or len(ni) == 0:
         raise ValueError("Could not find SCR pulses.")
 
-    # pair vectors
+    # pair vectors: ensure each minimum (onset) precedes its paired maximum
     if ni[0] > pi[0]:
-        ni = ni[1:]
+        pi = pi[1:]
     if pi[-1] < ni[-1]:
-        pi = pi[:-1]
-    if len(pi) > len(ni):
-        pi = pi[:-1]
+        ni = ni[:-1]
+    if len(ni) > len(pi):
+        ni = ni[:-1]
 
     li = min(len(pi), len(ni))
     i1 = pi[:li]

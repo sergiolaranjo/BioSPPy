@@ -141,11 +141,11 @@ def baroreflex_sensitivity(rri=None, sbp=None, rpeaks=None, systolic_peaks=None,
         out.update(seq_results)
 
     if method == 'spectral' or method == 'all':
-        spec_results = _spectral_method(rri, sbp, sampling_rate=sampling_rate)
+        spec_results = _spectral_method(rri, sbp)
         out.update(spec_results)
 
     if method == 'alpha' or method == 'all':
-        alpha_results = _alpha_method(rri, sbp, sampling_rate=sampling_rate)
+        alpha_results = _alpha_method(rri, sbp)
         out.update(alpha_results)
 
     if method not in ['sequence', 'spectral', 'alpha', 'all']:
@@ -706,9 +706,10 @@ def _spectral_method(rri, sbp, sampling_rate=4.0):
     rri = rri[:min_len]
     sbp = sbp[:min_len]
 
-    # Create uniform time vector
-    time_orig = np.arange(len(rri))
-    time_uniform = np.arange(0, len(rri), 1.0/sampling_rate)
+    # Create time axis from cumulative RRI (beats are not evenly spaced)
+    time_orig = np.cumsum(rri) / 1000.0  # convert ms to seconds
+    time_orig -= time_orig[0]  # start at 0
+    time_uniform = np.arange(time_orig[0], time_orig[-1], 1.0 / sampling_rate)
 
     # Interpolate to uniform sampling
     f_rri = interpolate.interp1d(time_orig, rri, kind='cubic', fill_value='extrapolate')
@@ -794,9 +795,10 @@ def _alpha_method(rri, sbp, sampling_rate=4.0):
     rri = rri[:min_len]
     sbp = sbp[:min_len]
 
-    # Create uniform time vector
-    time_orig = np.arange(len(rri))
-    time_uniform = np.arange(0, len(rri), 1.0/sampling_rate)
+    # Create time axis from cumulative RRI (beats are not evenly spaced)
+    time_orig = np.cumsum(rri) / 1000.0  # convert ms to seconds
+    time_orig -= time_orig[0]  # start at 0
+    time_uniform = np.arange(time_orig[0], time_orig[-1], 1.0 / sampling_rate)
 
     # Interpolate to uniform sampling
     f_rri = interpolate.interp1d(time_orig, rri, kind='cubic', fill_value='extrapolate')
