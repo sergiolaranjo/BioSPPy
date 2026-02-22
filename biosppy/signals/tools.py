@@ -767,16 +767,16 @@ def power_spectrum(
     if pow2:
         npoints = 2 ** (np.ceil(np.log2(npoints)))
 
-    Nyq = float(sampling_rate) / 2
+    npoints = int(npoints)
     hpoints = npoints // 2
 
-    freqs = np.linspace(0, Nyq, hpoints)
+    freqs = np.arange(hpoints) * float(sampling_rate) / npoints
     power = np.abs(np.fft.fft(signal, npoints)) / npoints
 
     # one-sided
     power = power[:hpoints]
-    power[1:] *= 2
     power = np.power(power, 2)
+    power[1:] *= 2
 
     if decibel:
         power = 10.0 * np.log10(power)
@@ -877,9 +877,6 @@ def welch_spectrum(
         return_onesided=True,
         scaling="spectrum",
     )
-
-    # compensate one-sided
-    power *= 2
 
     if decibel:
         power = 10.0 * np.log10(power)
