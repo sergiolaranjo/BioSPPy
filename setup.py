@@ -49,7 +49,9 @@ REQUIRED = [
 # What packages are optional?
 EXTRAS = {
     'eda': ['cvxopt'],
-    # 'fancy feature': ['django'],
+    'wfdb': ['wfdb'],  # PhysioNet WFDB format support
+    'biosig': ['pyBioSig'],  # BioSig multi-format support
+    'all': ['cvxopt', 'wfdb', 'pyBioSig'],  # Install all optional dependencies
 }
 
 # The rest you shouldn't have to touch too much :)

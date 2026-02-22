@@ -601,6 +601,255 @@ def load_edf(path):
         return np.array(signals).T, mdata
 
 
+def load_wfdb(path, channel=None):
+    """Load data from a WFDB (WaveForm DataBase) format file from PhysioNet.
+
+    Parameters
+    ----------
+    path : str
+        Path to the WFDB file (without extension, or with .hea/.dat extension).
+    channel : int, str, list, optional
+        Specific channel(s) to load. Can be an integer index, channel name(s),
+        or list of indices/names. If None, all channels are loaded.
+
+    Returns
+    -------
+    signals : array
+        Array of signals read from the WFDB file. Each column represents a signal.
+        If only one channel is selected, returns a 1D array.
+    mdata : dict
+        Metadata extracted from the WFDB file, including:
+        - sampling_rate : float (Hz)
+        - units : list of str
+        - labels : list of str (signal names)
+        - num_signals : int
+        - num_samples : int
+        - base_date : datetime or None
+        - base_time : datetime or None
+        - comments : list of str
+        - sig_name : list of str (original signal names)
+
+    Raises
+    ------
+    ImportError
+        If the wfdb package is not installed.
+    IOError
+        If the WFDB file cannot be read.
+
+    Notes
+    -----
+    This function uses the wfdb package to read PhysioNet WFDB format files.
+    Install it with: pip install wfdb
+
+    The WFDB format is commonly used in PhysioBank databases from PhysioNet.
+    More information: https://physionet.org/
+
+    Examples
+    --------
+    >>> # Load all channels
+    >>> signals, mdata = load_wfdb('path/to/record')
+    >>> # Load specific channel by index
+    >>> signal, mdata = load_wfdb('path/to/record', channel=0)
+    >>> # Load specific channel by name
+    >>> signal, mdata = load_wfdb('path/to/record', channel='ECG')
+    >>> # Load multiple channels
+    >>> signals, mdata = load_wfdb('path/to/record', channel=[0, 2])
+
+    """
+
+    # check if wfdb is installed
+    try:
+        import wfdb
+    except ImportError:
+        raise ImportError(
+            "The 'wfdb' package is required to load WFDB files. "
+            "Install it with: pip install wfdb"
+        )
+
+    # normalize path
+    path = utils.normpath(path)
+
+    # remove extension if present
+    if path.endswith('.hea') or path.endswith('.dat'):
+        path = path.rsplit('.', 1)[0]
+
+    try:
+        # read the WFDB record
+        if channel is not None:
+            # read specific channel(s)
+            record = wfdb.rdrecord(path, channels=channel if isinstance(channel, list) else [channel])
+        else:
+            # read all channels
+            record = wfdb.rdrecord(path)
+    except Exception as e:
+        raise IOError(f"Unable to read WFDB file: {path}. Error: {str(e)}")
+
+    # extract signals (p_signal contains physical values)
+    signals = record.p_signal
+
+    # if single channel, flatten to 1D
+    if signals.shape[1] == 1:
+        signals = signals.flatten()
+
+    # extract metadata
+    mdata = {
+        'sampling_rate': float(record.fs),
+        'units': record.units,
+        'labels': record.sig_name,
+        'num_signals': record.n_sig,
+        'num_samples': record.sig_len,
+        'base_date': record.base_date,
+        'base_time': record.base_time,
+        'comments': record.comments,
+        'sig_name': record.sig_name,
+    }
+
+    return signals, mdata
+
+
+def load_biosig(path, channel=None):
+    """Load data from various biomedical signal formats using BioSig.
+
+    Parameters
+    ----------
+    path : str
+        Path to the biosignal file.
+    channel : int, list, optional
+        Specific channel(s) to load by index. Can be an integer or list of integers.
+        If None, all channels are loaded.
+
+    Returns
+    -------
+    signals : array
+        Array of signals read from the file. Each column represents a signal.
+        If only one channel is selected, returns a 1D array.
+    mdata : dict
+        Metadata extracted from the file, including:
+        - sampling_rate : float (Hz)
+        - units : list of str (physical units)
+        - labels : list of str (channel labels)
+        - num_signals : int
+        - num_samples : int
+        - patient_id : str
+        - recording_id : str
+        - start_datetime : datetime or None
+        - file_type : str
+
+    Raises
+    ------
+    ImportError
+        If the biosig package is not installed.
+    IOError
+        If the file cannot be read.
+
+    Notes
+    -----
+    This function uses the biosig package to read various biomedical signal formats.
+    Install it with: pip install pyBioSig
+
+    BioSig supports numerous formats including:
+    - EDF, EDF+, BDF, BDF+
+    - GDF (General Data Format)
+    - BrainVision, BioSemi
+    - European Data Format (EDF)
+    - And many others
+
+    More information: https://biosig.sourceforge.net/
+
+    Examples
+    --------
+    >>> # Load all channels
+    >>> signals, mdata = load_biosig('path/to/file.gdf')
+    >>> # Load specific channel
+    >>> signal, mdata = load_biosig('path/to/file.gdf', channel=0)
+    >>> # Load multiple channels
+    >>> signals, mdata = load_biosig('path/to/file.gdf', channel=[0, 2, 3])
+
+    """
+
+    # check if biosig is installed
+    try:
+        import biosig
+    except ImportError:
+        raise ImportError(
+            "The 'biosig' package is required to load files with BioSig. "
+            "Install it with: pip install pyBioSig"
+        )
+
+    # normalize path
+    path = utils.normpath(path)
+
+    try:
+        # open the file
+        hdr = biosig.sopen(path, 'r')
+
+        # read all data
+        data = biosig.sread(hdr)
+
+        # close the file
+        biosig.sclose(hdr)
+
+    except Exception as e:
+        raise IOError(f"Unable to read file with BioSig: {path}. Error: {str(e)}")
+
+    # extract signals
+    signals = data
+
+    # select specific channels if requested
+    if channel is not None:
+        if isinstance(channel, int):
+            signals = signals[:, channel]
+        elif isinstance(channel, list):
+            signals = signals[:, channel]
+
+    # if single channel, flatten to 1D
+    if signals.ndim > 1 and signals.shape[1] == 1:
+        signals = signals.flatten()
+
+    # extract metadata
+    mdata = {
+        'sampling_rate': float(hdr.samplerate) if hasattr(hdr, 'samplerate') else None,
+        'num_signals': int(hdr.NS) if hasattr(hdr, 'NS') else signals.shape[1] if signals.ndim > 1 else 1,
+        'num_samples': int(hdr.NRec * hdr.SPR) if hasattr(hdr, 'NRec') and hasattr(hdr, 'SPR') else len(signals),
+        'file_type': hdr.TYPE if hasattr(hdr, 'TYPE') else 'unknown',
+    }
+
+    # add channel-specific metadata if available
+    if hasattr(hdr, 'Label'):
+        mdata['labels'] = [label.strip() for label in hdr.Label]
+        if channel is not None:
+            if isinstance(channel, int):
+                mdata['labels'] = [mdata['labels'][channel]]
+            elif isinstance(channel, list):
+                mdata['labels'] = [mdata['labels'][i] for i in channel]
+
+    if hasattr(hdr, 'PhysDim'):
+        mdata['units'] = [unit.strip() for unit in hdr.PhysDim]
+        if channel is not None:
+            if isinstance(channel, int):
+                mdata['units'] = [mdata['units'][channel]]
+            elif isinstance(channel, list):
+                mdata['units'] = [mdata['units'][i] for i in channel]
+
+    if hasattr(hdr, 'Patient'):
+        mdata['patient_id'] = hdr.Patient.Id if hasattr(hdr.Patient, 'Id') else None
+
+    if hasattr(hdr, 'ID'):
+        mdata['recording_id'] = hdr.ID.Recording if hasattr(hdr.ID, 'Recording') else None
+
+    # parse start time if available
+    if hasattr(hdr, 'T0'):
+        try:
+            # T0 is typically in a specific format, try to parse it
+            mdata['start_datetime'] = hdr.T0
+        except:
+            mdata['start_datetime'] = None
+    else:
+        mdata['start_datetime'] = None
+
+    return signals, mdata
+
+
 class HDF(object):
     """Wrapper class to operate on BioSPPy HDF5 files.
 
