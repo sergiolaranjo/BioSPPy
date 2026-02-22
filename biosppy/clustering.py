@@ -23,6 +23,8 @@ import scipy.cluster.vq as scv
 import scipy.sparse as sp
 import sklearn.cluster as skc
 from sklearn.model_selection import ParameterGrid
+from sklearn.metrics import (silhouette_score, silhouette_samples,
+                             davies_bouldin_score, calinski_harabasz_score)
 
 # local
 from . import metrics, utils
@@ -1006,3 +1008,283 @@ def _merge_clusters(clusters):
     res[0] = np.unique(aux).astype('int')
 
     return res
+
+
+def validate_clustering(data=None, labels=None, metric='euclidean'):
+    """Compute clustering validation metrics.
+
+    Parameters
+    ----------
+    data : array
+        An m by n array of m data samples in an n-dimensional space.
+    labels : array
+        Cluster labels for each sample.
+    metric : str, optional
+        Distance metric (see scipy.spatial.distance). Default is 'euclidean'.
+
+    Returns
+    -------
+    silhouette : float
+        Silhouette coefficient (range: -1 to 1). Higher is better.
+        Measures how similar an object is to its own cluster compared to other clusters.
+    davies_bouldin : float
+        Davies-Bouldin index. Lower is better.
+        Measures the average similarity between each cluster and its most similar cluster.
+    calinski_harabasz : float
+        Calinski-Harabasz score (Variance Ratio Criterion). Higher is better.
+        Ratio of between-cluster dispersion to within-cluster dispersion.
+    n_clusters : int
+        Number of unique clusters (excluding outliers).
+
+    Notes
+    -----
+    * Silhouette coefficient ranges from -1 (incorrect clustering) to +1 (dense, well-separated clusters).
+    * Davies-Bouldin index: 0 is the best value; lower values indicate better clustering.
+    * Calinski-Harabasz score: higher values indicate better-defined clusters.
+    * These metrics require at least 2 clusters and do not count outliers (label -1).
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from biosppy import clustering
+    >>> X = np.random.randn(100, 10)
+    >>> result = clustering.kmeans(data=X, k=3)
+    >>> labels = np.zeros(100, dtype=int)
+    >>> for cluster_id, indices in result['clusters'].items():
+    ...     if cluster_id != -1:
+    ...         labels[indices] = cluster_id
+    >>> validation = clustering.validate_clustering(data=X, labels=labels)
+    >>> print("Silhouette Score:", validation['silhouette'])
+
+    """
+
+    # check inputs
+    if data is None:
+        raise TypeError("Please specify input data.")
+    if labels is None:
+        raise TypeError("Please specify cluster labels.")
+
+    # ensure numpy arrays
+    data = np.atleast_2d(data)
+    labels = np.array(labels)
+
+    # remove outliers from validation
+    mask = labels != -1
+    data_clean = data[mask]
+    labels_clean = labels[mask]
+
+    # get unique clusters
+    unique_labels = np.unique(labels_clean)
+    n_clusters = len(unique_labels)
+
+    # need at least 2 clusters for validation
+    if n_clusters < 2:
+        raise ValueError(
+            "Clustering validation requires at least 2 clusters. Found: {}".format(n_clusters)
+        )
+
+    # compute metrics
+    silhouette = silhouette_score(data_clean, labels_clean, metric=metric)
+    davies_bouldin = davies_bouldin_score(data_clean, labels_clean)
+    calinski_harabasz = calinski_harabasz_score(data_clean, labels_clean)
+
+    # prepare output
+    args = (silhouette, davies_bouldin, calinski_harabasz, n_clusters)
+    names = ('silhouette', 'davies_bouldin', 'calinski_harabasz', 'n_clusters')
+
+    return utils.ReturnTuple(args, names)
+
+
+def silhouette_analysis(data=None, labels=None, metric='euclidean'):
+    """Compute silhouette coefficients for each sample.
+
+    The silhouette coefficient for a sample is (b - a) / max(a, b) where:
+    - a: mean distance between a sample and all other points in the same cluster
+    - b: mean distance between a sample and all points in the nearest cluster
+
+    Parameters
+    ----------
+    data : array
+        An m by n array of m data samples in an n-dimensional space.
+    labels : array
+        Cluster labels for each sample.
+    metric : str, optional
+        Distance metric (see scipy.spatial.distance). Default is 'euclidean'.
+
+    Returns
+    -------
+    sample_silhouette : array
+        Silhouette coefficient for each sample.
+    mean_silhouette : float
+        Mean silhouette coefficient across all samples.
+    cluster_silhouettes : dict
+        Mean silhouette coefficient for each cluster.
+
+    Notes
+    -----
+    * Silhouette values near +1 indicate that the sample is far from neighboring clusters.
+    * Values near 0 indicate that the sample is on or very close to the decision boundary.
+    * Negative values indicate that samples might have been assigned to the wrong cluster.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from biosppy import clustering
+    >>> X = np.random.randn(100, 10)
+    >>> result = clustering.kmeans(data=X, k=3)
+    >>> labels = np.zeros(100, dtype=int)
+    >>> for cluster_id, indices in result['clusters'].items():
+    ...     if cluster_id != -1:
+    ...         labels[indices] = cluster_id
+    >>> sil_result = clustering.silhouette_analysis(data=X, labels=labels)
+    >>> print("Mean Silhouette:", sil_result['mean_silhouette'])
+
+    """
+
+    # check inputs
+    if data is None:
+        raise TypeError("Please specify input data.")
+    if labels is None:
+        raise TypeError("Please specify cluster labels.")
+
+    # ensure numpy arrays
+    data = np.atleast_2d(data)
+    labels = np.array(labels)
+
+    # remove outliers
+    mask = labels != -1
+    data_clean = data[mask]
+    labels_clean = labels[mask]
+
+    # compute silhouette coefficients
+    sample_silhouette = silhouette_samples(data_clean, labels_clean, metric=metric)
+
+    # mean silhouette
+    mean_silhouette = np.mean(sample_silhouette)
+
+    # per-cluster silhouette
+    unique_labels = np.unique(labels_clean)
+    cluster_silhouettes = {}
+    for label in unique_labels:
+        cluster_mask = labels_clean == label
+        cluster_silhouettes[int(label)] = np.mean(sample_silhouette[cluster_mask])
+
+    # prepare output
+    args = (sample_silhouette, mean_silhouette, cluster_silhouettes)
+    names = ('sample_silhouette', 'mean_silhouette', 'cluster_silhouettes')
+
+    return utils.ReturnTuple(args, names)
+
+
+def optimal_clusters(data=None, max_k=10, method='kmeans', metric='euclidean',
+                     criterion='silhouette', **kwargs):
+    """Find the optimal number of clusters using validation metrics.
+
+    Parameters
+    ----------
+    data : array
+        An m by n array of m data samples in an n-dimensional space.
+    max_k : int, optional
+        Maximum number of clusters to test. Default is 10.
+    method : str, optional
+        Clustering method to use: 'kmeans', 'hierarchical', or 'dbscan'.
+        Default is 'kmeans'.
+    metric : str, optional
+        Distance metric (see scipy.spatial.distance). Default is 'euclidean'.
+    criterion : str, optional
+        Validation criterion: 'silhouette', 'davies_bouldin', or 'calinski_harabasz'.
+        Default is 'silhouette'.
+    **kwargs : dict, optional
+        Additional arguments to pass to the clustering function.
+
+    Returns
+    -------
+    optimal_k : int
+        Optimal number of clusters.
+    scores : array
+        Validation scores for each k value.
+    all_results : list
+        Clustering results for each k value.
+
+    Notes
+    -----
+    * For 'silhouette' and 'calinski_harabasz', higher scores indicate better clustering.
+    * For 'davies_bouldin', lower scores indicate better clustering.
+    * The search range is from 2 to max_k clusters.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from biosppy import clustering
+    >>> X = np.random.randn(100, 10)
+    >>> result = clustering.optimal_clusters(data=X, max_k=10, method='kmeans')
+    >>> print("Optimal number of clusters:", result['optimal_k'])
+
+    """
+
+    # check inputs
+    if data is None:
+        raise TypeError("Please specify input data.")
+
+    if method not in ['kmeans', 'hierarchical']:
+        raise ValueError(
+            "Method '{}' not supported. Use 'kmeans' or 'hierarchical'.".format(method)
+        )
+
+    if criterion not in ['silhouette', 'davies_bouldin', 'calinski_harabasz']:
+        raise ValueError(
+            "Criterion '{}' not supported.".format(criterion)
+        )
+
+    # ensure 2D array
+    data = np.atleast_2d(data)
+
+    # test different k values
+    k_range = range(2, max_k + 1)
+    scores = []
+    all_results = []
+
+    for k in k_range:
+        # perform clustering
+        if method == 'kmeans':
+            result = kmeans(data=data, k=k, **kwargs)
+        elif method == 'hierarchical':
+            result = hierarchical(data=data, k=k, metric=metric, **kwargs)
+
+        # convert clusters to labels
+        labels = np.full(len(data), -1, dtype=int)
+        for cluster_id, indices in result['clusters'].items():
+            if cluster_id != -1:
+                labels[indices] = cluster_id
+
+        # validate clustering
+        try:
+            validation = validate_clustering(data=data, labels=labels, metric=metric)
+
+            if criterion == 'silhouette':
+                score = validation['silhouette']
+            elif criterion == 'davies_bouldin':
+                score = -validation['davies_bouldin']  # negative because lower is better
+            elif criterion == 'calinski_harabasz':
+                score = validation['calinski_harabasz']
+
+            scores.append(score)
+            all_results.append(result)
+        except ValueError:
+            # skip if validation fails
+            scores.append(-np.inf if criterion == 'davies_bouldin' else np.inf)
+            all_results.append(result)
+
+    # find optimal k
+    scores = np.array(scores)
+    if criterion == 'davies_bouldin':
+        optimal_idx = np.argmin(-scores)  # maximize negative davies_bouldin
+    else:
+        optimal_idx = np.argmax(scores)
+    optimal_k = k_range[optimal_idx]
+
+    # prepare output
+    args = (optimal_k, scores, all_results)
+    names = ('optimal_k', 'scores', 'all_results')
+
+    return utils.ReturnTuple(args, names)
